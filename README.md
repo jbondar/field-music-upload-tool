@@ -48,6 +48,27 @@ app/
 tests/          pytest, including a full receive-to-filed run
 ```
 
+## Running behind an authenticating proxy
+
+Set `TRUSTED_EMAIL_HEADER` and the app stops doing its own Google OAuth: it
+takes the caller's address from that header and trusts it, and `/login`,
+`/callback` and `/redeem` return 404 so there is only one way in.
+
+```
+TRUSTED_EMAIL_HEADER=X-Auth-Request-Email
+AUTH_URL=https://auth.example.com     # where the page sends people to manage access
+SIGN_OUT_URL=/oauth2/sign_out
+```
+
+The app's own allowlist is not consulted in this mode. Reaching it at all is
+the authorisation -- the gate in front has already checked this address, and a
+second, staler list here would only lock out people who were correctly let in.
+`ADMIN_EMAILS` still governs the admin panel.
+
+Only set this when the app is genuinely unreachable except through that proxy:
+no published port, and the proxy overwriting the header on every request.
+Anything that can reach the app directly can otherwise claim to be anyone.
+
 ## Configuration
 
 Copy `.env.example` to `.env`. Everything is environment driven; see that file

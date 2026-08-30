@@ -24,6 +24,15 @@
 
     if (!state.configured) $("unconfigured").hidden = false;
 
+    if (state.proxyAuth) {
+      // Sign-in, invites and the allowlist all belong to the proxy now.
+      $("admin-access").hidden = true;
+      $("admin-access-elsewhere").hidden = false;
+      $("admin-access-link").href = state.authUrl || "/";
+      $("logout-form").method = "get";
+      $("logout-form").action = state.signOutUrl || "/oauth2/sign_out";
+    }
+
     if (signedIn) {
       $("who").hidden = false;
       $("who-name").textContent = state.user.name || state.user.email;

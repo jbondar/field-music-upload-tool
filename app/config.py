@@ -50,7 +50,29 @@ class Config:
     base_path: str = field(default_factory=lambda: _env("BASE_PATH").rstrip("/"))
     public_url: str = field(default_factory=lambda: _env("PUBLIC_URL").rstrip("/"))
 
-    # --- Google OAuth ------------------------------------------------------
+    # --- Identity ----------------------------------------------------------
+    # When set, an authenticating proxy in front of this app (oauth2-proxy,
+    # Cloudflare Access, anything that terminates the sign-in) has already
+    # established who the caller is, and puts their address in this header.
+    # The app then runs no OAuth of its own.
+    #
+    # Whatever arrives in this header is trusted completely, so only set it
+    # when the app is genuinely unreachable except through that proxy -- no
+    # published port, and the proxy overwriting the header on every request.
+    trusted_email_header: str = field(
+        default_factory=lambda: _env("TRUSTED_EMAIL_HEADER").lower()
+    )
+    trusted_name_header: str = field(
+        default_factory=lambda: _env("TRUSTED_NAME_HEADER", "X-Auth-Request-User").lower()
+    )
+    # Where the page sends people to manage access or sign out, when the proxy
+    # owns both. Only used when trusted_email_header is set.
+    auth_url: str = field(default_factory=lambda: _env("AUTH_URL").rstrip("/"))
+    sign_out_url: str = field(
+        default_factory=lambda: _env("SIGN_OUT_URL", "/oauth2/sign_out")
+    )
+
+    # --- Google OAuth (unused when trusted_email_header is set) -------------
     google_client_id: str = field(default_factory=lambda: _env("GOOGLE_CLIENT_ID"))
     google_client_secret: str = field(default_factory=lambda: _env("GOOGLE_CLIENT_SECRET"))
     google_redirect_uri: str = field(default_factory=lambda: _env("GOOGLE_REDIRECT_URI"))
@@ -94,11 +116,20 @@ class Config:
     def cookie_path(self) -> str:
         return self.base_path or "/"
 
+    @property
+    def proxy_auth(self) -> bool:
+        """Is sign-in someone else's job?"""
+        return bool(self.trusted_email_header)
+
     def is_admin(self, email: str) -> bool:
         return email.strip().lower() in self.admin_emails
 
     def missing_required(self) -> list[str]:
         """Names of settings the app genuinely cannot run without."""
+        # Behind a proxy there is no OAuth client and no session to sign,
+        # so none of the below applies.
+        if self.proxy_auth:
+            return []
         missing = []
         if not self.google_client_id:
             missing.append("GOOGLE_CLIENT_ID")

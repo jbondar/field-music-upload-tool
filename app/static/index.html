@@ -13,7 +13,7 @@
   <div class="who" id="who" hidden>
     <span id="who-name"></span>
     <a class="admin-link" id="admin-link" href="#admin" hidden>admin</a>
-    <form method="post" action="__BASE_PATH__/logout"><button class="link">sign out</button></form>
+    <form id="logout-form" method="post" action="__BASE_PATH__/logout"><button class="link">sign out</button></form>
   </div>
 </header>
 
@@ -111,16 +111,23 @@
 
   <!-- Admin -->
   <section id="view-admin" class="card" hidden>
-    <h2>Invite codes</h2>
-    <form id="invite-form" class="inline">
-      <input id="invite-note" placeholder="who is this for?" autocomplete="off">
-      <input id="invite-uses" type="number" min="1" max="50" value="1" title="uses">
-      <button class="btn" type="submit">Create code</button>
-    </form>
-    <table class="admin-table" id="invites"></table>
+    <!-- Hidden when an authenticating proxy owns access: invites and the
+         allowlist live there, and two places to grant access is one too many. -->
+    <div id="admin-access">
+      <h2>Invite codes</h2>
+      <form id="invite-form" class="inline">
+        <input id="invite-note" placeholder="who is this for?" autocomplete="off">
+        <input id="invite-uses" type="number" min="1" max="50" value="1" title="uses">
+        <button class="btn" type="submit">Create code</button>
+      </form>
+      <table class="admin-table" id="invites"></table>
 
-    <h2>Who can upload</h2>
-    <table class="admin-table" id="allowed"></table>
+      <h2>Who can upload</h2>
+      <table class="admin-table" id="allowed"></table>
+    </div>
+    <p id="admin-access-elsewhere" class="muted" hidden>
+      Access is managed at <a id="admin-access-link" href="/">the sign-in service</a>.
+    </p>
 
     <h2>Recent uploads</h2>
     <table class="admin-table" id="uploads"></table>

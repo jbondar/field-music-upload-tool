@@ -68,6 +68,16 @@ async def _startup() -> None:
 # --------------------------------------------------------------------------
 
 def current_user(request: Request) -> auth.User | None:
+    if config.proxy_auth:
+        # The proxy in front has already done the sign-in; the header it sets
+        # is the whole story. See Config.trusted_email_header for why this is
+        # safe to believe.
+        email = (request.headers.get(config.trusted_email_header) or "").strip()
+        if not email:
+            return None
+        name = (request.headers.get(config.trusted_name_header) or "").strip()
+        return auth.User(email=email.lower(), name=name or email, picture="")
+
     token = request.cookies.get(auth.SESSION_COOKIE)
     if not token:
         return None
@@ -96,7 +106,11 @@ def _require_uploader(request: Request) -> auth.User:
     user = current_user(request)
     if user is None:
         raise _Unauthorized("Please sign in with Google.")
-    if not access.is_allowed(user.email):
+    # Behind a proxy, reaching this app at all *is* the authorisation: the
+    # gate upstream already checked this address against its grant list, and
+    # consulting a second, staler allowlist here would only lock out people
+    # who were correctly let in.
+    if not config.proxy_auth and not access.is_allowed(user.email):
         raise _Unauthorized("Your account is not on the upload list.", status=403)
     return user
 
@@ -149,12 +163,17 @@ async def index(request: Request) -> HTMLResponse:
         "maxFiles": config.max_files_per_show,
         "extensions": sorted(naming.AUDIO_EXTENSIONS),
         "autoPromote": config.auto_promote,
+        # Hides the sign-in and invite-code views: there is nothing for them
+        # to do when the proxy handles both.
+        "proxyAuth": config.proxy_auth,
+        "authUrl": config.auth_url,
+        "signOutUrl": config.sign_out_url,
     }
     if user:
         state.update(
             {
                 "user": {"email": user.email, "name": user.display_name, "picture": user.picture},
-                "allowed": access.is_allowed(user.email),
+                "allowed": config.proxy_auth or access.is_allowed(user.email),
                 "admin": config.is_admin(user.email),
             }
         )
@@ -167,6 +186,8 @@ async def index(request: Request) -> HTMLResponse:
 
 @app.get("/login")
 async def login(request: Request) -> Response:
+    if config.proxy_auth:
+        return PlainTextResponse("Sign-in is handled by the proxy.", status_code=404)
     if config.missing_required():
         return PlainTextResponse("Sign-in is not configured yet.", status_code=503)
     nonce, cookie = sessions.dump_state(next_path="/")
@@ -178,6 +199,8 @@ async def login(request: Request) -> Response:
 
 @app.get("/callback")
 async def callback(request: Request) -> Response:
+    if config.proxy_auth:
+        return PlainTextResponse("Sign-in is handled by the proxy.", status_code=404)
     error = request.query_params.get("error")
     if error:
         return _render_message("Sign-in was cancelled.", back=True)
@@ -216,6 +239,8 @@ async def logout() -> Response:
 
 @app.post("/redeem")
 async def redeem(request: Request, code: str = Form("")) -> Response:
+    if config.proxy_auth:
+        return PlainTextResponse("Sign-in is handled by the proxy.", status_code=404)
     user = current_user(request)
     if user is None:
         return RedirectResponse(config.url_for("/"), status_code=303)
