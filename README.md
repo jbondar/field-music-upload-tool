@@ -48,6 +48,25 @@ app/
 tests/          pytest, including a full receive-to-filed run
 ```
 
+## Showing that it landed in Plex
+
+Filing a folder onto the NAS is only most of the job -- until Plex has scanned
+it, the uploader has no way to see that anything happened. After a show is
+filed the app asks Plex to scan **just that folder**, waits for it to appear,
+and hands back a link straight to the album.
+
+The album is matched on file path, not on title: Plex's agents rewrite an
+album's title to whatever they match online, so the name it was filed under is
+often not the name it ends up with.
+
+All of it is optional and none of it can fail an upload. Without `PLEX_TOKEN`
+the page simply never mentions Plex; with a Plex that is down or slow, the
+show is already safely in the library and the uploader is told so.
+
+`PLEX_MUSIC_PATH` matters: Plex reaches the same files through its own mount,
+so `/music/Artist/Show` here has to become `/media/Music/Artist/Show` before a
+scan request means anything. It must match the Location on the music section.
+
 ## Filling the form in from the link
 
 Every one of these hosts puts the folder name in the response headers, so

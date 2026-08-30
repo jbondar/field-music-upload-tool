@@ -112,6 +112,9 @@ class Manifest:
     # Progress of a share-link import, polled by the page while it runs:
     # {"status", "label", "message", "bytes", "total", "files"}.
     fetch: dict[str, Any] = field(default_factory=dict)
+    # Where the show ended up in Plex once it has been scanned in:
+    # {"status", "url", "title", "artist"}. Purely informational.
+    plex: dict[str, Any] = field(default_factory=dict)
     # The show's poster, if one came with it: {"stored", "original", "size"}.
     # Not a TrackEntry -- it is artwork, not a track, and must never be
     # numbered, tagged or counted towards the track list.
@@ -390,6 +393,12 @@ class Store:
             }
             self._write_manifest(manifest)
             return manifest.cover
+
+    def set_plex(self, session_id: str, record: dict[str, Any]) -> None:
+        with self._lock(session_id):
+            manifest = self.load(session_id)
+            manifest.plex = record
+            self._write_manifest(manifest)
 
     def set_fetch(self, session_id: str, **fields: Any) -> dict[str, Any]:
         """Merge progress into the manifest's fetch record.

@@ -26,7 +26,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, importer, metadata, naming, storage
+from . import auth, importer, metadata, naming, plex as plex_api, storage
 from .config import config
 from .invites import AccessStore, RedeemError, normalize_code
 from .storage import UploadError
@@ -41,6 +41,13 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 sessions = auth.Sessions(config.session_secret or "insecure-dev-secret-do-not-ship")
 access = AccessStore(config.state_dir, config.seed_allowed_emails)
+plex = plex_api.Plex(
+    config.plex_url,
+    config.plex_token,
+    section=config.plex_section,
+    music_path=config.plex_music_path,
+    library_root=config.music_dir,
+)
 store = storage.Store(
     config.staging_dir,
     config.music_dir,
@@ -630,15 +637,44 @@ async def finalize(session_id: str, request: Request) -> Response:
         await to_thread.run_sync(store.apply_track_edits, session_id, edits)
 
     manifest = await to_thread.run_sync(store.finalize, session_id)
+
+    promoted = manifest.status == storage.STATUS_PROMOTED
+    if promoted and plex.configured and manifest.target_path:
+        # Detached: Plex can take a minute to index, and the show is already
+        # safely in the library. The page polls the session for the link.
+        await to_thread.run_sync(store.set_plex, session_id, {"status": "scanning"})
+        asyncio.create_task(_publish_to_plex(session_id, Path(manifest.target_path)))
+
     return JSONResponse(
         {
-            "ok": manifest.status == storage.STATUS_PROMOTED,
+            "ok": promoted,
             "status": manifest.status,
             "errors": manifest.errors,
             "folder": Path(manifest.target_path).name if manifest.target_path else "",
             "files": manifest.files,
+            "plex": manifest.plex,
+            "plexPending": promoted and plex.configured,
         }
     )
+
+
+async def _publish_to_plex(session_id: str, folder: Path) -> None:
+    """Scan the new folder into Plex and record where it landed.
+
+    Nothing in here can fail the upload: by the time this runs the show is
+    already filed, and a Plex that is down is a missing link, not a lost show.
+    """
+    try:
+        record = await to_thread.run_sync(plex.publish, folder)
+    except Exception:
+        log.exception("plex publish failed for %s", session_id)
+        record = {"status": "error", "message": "Could not reach Plex."}
+    try:
+        await to_thread.run_sync(store.set_plex, session_id, record)
+    except Exception:
+        log.exception("could not record plex result for %s", session_id)
+    else:
+        log.info("plex for %s: %s", session_id, record.get("status"))
 
 
 @app.get("/api/session/{session_id}")
@@ -653,6 +689,7 @@ async def session_status(session_id: str, request: Request) -> Response:
             "files": manifest.files,
             "fetch": manifest.fetch,
             "cover": manifest.cover,
+            "plex": manifest.plex,
         }
     )
 

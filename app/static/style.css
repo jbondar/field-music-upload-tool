@@ -159,3 +159,7 @@ input.guessed:focus { background: var(--bg); }
 .link-choice .what { min-width: 0; }
 .link-choice .what strong { display: block; overflow: hidden;
                             text-overflow: ellipsis; white-space: nowrap; }
+
+.plex-row { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap;
+            margin-top: 0.8rem; }
+.plex-row #plex-status { font-size: 0.9rem; color: var(--muted); }

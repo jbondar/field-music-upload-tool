@@ -353,6 +353,8 @@
   let fetchedSession = null;
   let pollTimer = null;
   let peekedFor = null;
+  let peeking = false;
+  let peekTimer = null;
 
   function linkStatus(message, cls) {
     const el = $("link-status");
@@ -361,36 +363,42 @@
     el.className = "muted small" + (cls ? " " + cls : "");
   }
 
+  async function peekLink(url) {
+    // Look at the link's headers only. Every one of these hosts names the
+    // folder there, so the form fills in for the price of one request and a
+    // 1 GB show costs nothing to look at.
+    if (!url || url === peekedFor || peeking) return;
+    peeking = true;
+    linkStatus("Reading the link…");
+    try {
+      const peek = await postJSON("/api/inspect-link", { url });
+      if (!peek.ok) throw new Error(peek.error);
+      peekedFor = url;
+      const filled = applySuggestion(peek.suggested || {});
+      const size = peek.size ? ` · ${humanSize(peek.size)}` : "";
+      linkStatus(
+        `“${peek.filename}”${size}` +
+        (filled.length ? ` — filled in ${filled.join(", ")}. Check them, then Fetch.`
+                       : " — fill in the show details, then Fetch.")
+      );
+    } catch (err) {
+      linkStatus(err.message, "bad");
+    } finally {
+      peeking = false;
+    }
+  }
+
   async function fetchFromLink() {
     const url = $("link-url").value.trim();
     if (!url) { linkStatus("Paste a link first.", "bad"); return; }
 
-    // First click on a new link only looks at its headers -- every one of
-    // these hosts names the folder there, so the form fills in for the price
-    // of one request and the uploader gets to check the guesses before a
-    // gigabyte starts moving. Clicking again downloads it.
-    if (peekedFor !== url) {
+    // Normally the paste already peeked. This covers pressing Fetch straight
+    // away, or a peek that failed and is worth one more try.
+    if (url !== peekedFor) {
       $("link-fetch").disabled = true;
-      linkStatus("Reading the link…");
-      try {
-        const peek = await postJSON("/api/inspect-link", { url });
-        if (!peek.ok) throw new Error(peek.error);
-        peekedFor = url;
-        const filled = applySuggestion(peek.suggested || {});
-        const size = peek.size ? ` · ${humanSize(peek.size)}` : "";
-        linkStatus(
-          `“${peek.filename}”${size}` +
-          (filled.length
-            ? ` — filled in ${filled.join(", ")}. Check them, then press Fetch again.`
-            : " — fill in the show details, then press Fetch again.")
-        );
-        $("link-fetch").textContent = "Fetch it";
-      } catch (err) {
-        linkStatus(err.message, "bad");
-      } finally {
-        $("link-fetch").disabled = false;
-      }
-      return;
+      await peekLink(url);
+      $("link-fetch").disabled = false;
+      if (url !== peekedFor) return;   // the link itself is no good
     }
 
     // The show details are needed before anything can be fetched: the server
@@ -471,6 +479,55 @@
       linkStatus(text);
       poll();
     }, 1500);
+  }
+
+  /* ---------------------------------------------------------------- plex */
+
+  function watchPlex(sessionId) {
+    // Filing the folder is not the part the uploader can see. Plex indexes on
+    // its own schedule, so poll until it has, then hand over a link to it.
+    const row = $("plex-row");
+    row.hidden = false;
+    $("plex-status").textContent = "Asking Plex to scan it…";
+    $("plex-link").hidden = true;
+
+    const started = Date.now();
+    const tick = async () => {
+      if (Date.now() - started > 4 * 60 * 1000) {
+        $("plex-status").textContent =
+          "Plex has been asked to scan it; it will appear shortly.";
+        return;
+      }
+      let data;
+      try {
+        data = await postJSON(`/api/session/${sessionId}`, undefined, "GET");
+      } catch (_) {
+        setTimeout(tick, 5000);
+        return;
+      }
+      const p = data.plex || {};
+      if (p.status === "indexed" && p.url) {
+        $("plex-status").textContent = p.artist
+          ? `In Plex as “${p.title}” by ${p.artist}.`
+          : "It is in Plex.";
+        const link = $("plex-link");
+        link.href = p.url;
+        link.hidden = false;
+        return;
+      }
+      if (p.status === "error") {
+        $("plex-status").textContent =
+          p.message || "Could not reach Plex — the show is filed either way.";
+        return;
+      }
+      if (p.status === "scanning" && p.message) {
+        $("plex-status").textContent = p.message;
+        return;
+      }
+      $("plex-status").textContent = "Waiting for Plex to index it…";
+      setTimeout(tick, 4000);
+    };
+    setTimeout(tick, 2500);
   }
 
   function renderChoices(options) {
@@ -554,6 +611,7 @@
     $("submit").disabled = true;
     $("progress-card").hidden = false;
     $("results").textContent = "";
+    $("plex-row").hidden = true;
     $("progress-title").textContent = "Uploading…";
     $("bar-fill").style.width = "0%";
     $("progress-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -628,6 +686,7 @@
         $("progress-title").textContent = "Filed";
         $("progress-detail").textContent = `Added to the library as ${result.folder}`;
         note("This show is now in the library. Thanks!", "ok");
+        if (result.plexPending) watchPlex(session.id);
         queue = [];
         fetchedSession = null;
         cover = null;
@@ -756,9 +815,18 @@
     $("show-form").addEventListener("submit", submit);
 
     $("link-fetch").addEventListener("click", fetchFromLink);
-    $("link-url").addEventListener("input", () => {
-      if ($("link-url").value.trim() !== peekedFor) $("link-fetch").textContent = "Fetch";
-    });
+
+    // Pasting a link should fill the form in by itself -- waiting for a click
+    // to do it makes the page look like it ignored what you just pasted.
+    const schedulePeek = (delay) => {
+      clearTimeout(peekTimer);
+      const url = $("link-url").value.trim();
+      if (!url || url === peekedFor) return;
+      peekTimer = setTimeout(() => peekLink($("link-url").value.trim()), delay);
+    };
+    $("link-url").addEventListener("paste", () => schedulePeek(50));
+    $("link-url").addEventListener("input", () => schedulePeek(800));
+    $("link-url").addEventListener("blur", () => schedulePeek(0));
     $("link-url").addEventListener("keydown", (e) => {
       // Enter in the link box must not submit the show form behind it.
       if (e.key === "Enter") { e.preventDefault(); fetchFromLink(); }

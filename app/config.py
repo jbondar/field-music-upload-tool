@@ -93,6 +93,18 @@ class Config:
     staging_dir: Path = field(default_factory=lambda: Path(_env("STAGING_DIR", "/staging")))
     state_dir: Path = field(default_factory=lambda: Path(_env("STATE_DIR", "/state")))
 
+    # --- Plex --------------------------------------------------------------
+    # Optional. Without a token the app just does not mention Plex; filing a
+    # show never depends on it.
+    plex_url: str = field(default_factory=lambda: _env("PLEX_URL").rstrip("/"))
+    plex_token: str = field(default_factory=lambda: _env("PLEX_TOKEN"))
+    plex_section: str = field(default_factory=lambda: _env("PLEX_SECTION"))
+    # Plex reaches the same files through its own mount, so the library path
+    # has to be translated before a scan request means anything to it.
+    plex_music_path: str = field(
+        default_factory=lambda: _env("PLEX_MUSIC_PATH", "/media/Music")
+    )
+
     # --- Limits ------------------------------------------------------------
     max_file_bytes: int = field(
         default_factory=lambda: _env_int("MAX_FILE_MB", 1024) * 1024 * 1024
