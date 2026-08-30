@@ -109,6 +109,9 @@ class Manifest:
     target_path: str = ""
     promoted_at: str = ""
     total_bytes: int = 0
+    # Progress of a share-link import, polled by the page while it runs:
+    # {"status", "label", "message", "bytes", "total", "files"}.
+    fetch: dict[str, Any] = field(default_factory=dict)
 
     @property
     def details(self) -> ShowDetails:
@@ -346,6 +349,19 @@ class Store:
         return await to_thread.run_sync(
             self._finish_store, session_id, filename, stored, written
         )
+
+    def set_fetch(self, session_id: str, **fields: Any) -> dict[str, Any]:
+        """Merge progress into the manifest's fetch record.
+
+        Held under the session lock like every other manifest write, so a
+        progress tick cannot land on top of a file that finished storing at
+        the same moment.
+        """
+        with self._lock(session_id):
+            manifest = self.load(session_id)
+            manifest.fetch = {**manifest.fetch, **fields}
+            self._write_manifest(manifest)
+            return manifest.fetch
 
     def apply_track_edits(
         self, session_id: str, edits: dict[str, dict[str, Any]]

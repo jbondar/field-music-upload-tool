@@ -90,6 +90,23 @@
         <p class="muted small" id="limits"></p>
       </div>
 
+      <div class="link-import">
+        <label class="muted small" for="link-url">
+          …or fetch it from a share link — the server downloads it, so you can
+          close the tab. A shared folder arrives as a zip and is unpacked.
+        </label>
+        <div class="link-row">
+          <input id="link-url" type="url" autocomplete="off"
+                 placeholder="Dropbox, Box or Google Drive link">
+          <button class="btn" id="link-fetch" type="button">Fetch</button>
+        </div>
+        <p class="muted small" id="link-status" hidden></p>
+      </div>
+
+      <p class="muted small tracks-hint" id="tracks-hint" hidden>
+        The number and title below are what gets written into the files —
+        edit either one before uploading.
+      </p>
       <table class="tracks" id="tracks" hidden>
         <thead><tr><th class="n">#</th><th>Title</th><th>File</th><th class="s">Size</th><th></th></tr></thead>
         <tbody id="tracks-body"></tbody>

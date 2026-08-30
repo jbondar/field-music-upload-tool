@@ -48,6 +48,29 @@ app/
 tests/          pytest, including a full receive-to-filed run
 ```
 
+## Fetching from a share link
+
+Instead of uploading, a taper can paste a Dropbox, Box or Google Drive link
+and the server downloads it. A shared *folder* arrives as a zip and is
+unpacked; the audio is kept and everything else in the archive is ignored.
+
+The download runs detached from the request and the page polls the session for
+progress, so a multi-gigabyte show does not depend on the browser staying
+open.
+
+Fetching a URL supplied by a user is a server-side request forgery hole if
+done naively, so `app/importer.py` is deliberately narrow:
+
+- only the file hosts listed in `ALLOWED_HOST_SUFFIXES`, matched on a label
+  boundary so `dropbox.com.evil.example` is not a Dropbox link
+- redirects are followed by hand and every hop is re-checked, since an allowed
+  host is otherwise free to redirect anywhere
+- every hostname is resolved and refused if it lands on a private, loopback,
+  link-local or reserved address
+- archives are treated as hostile: entry count and declared uncompressed size
+  are checked against the show limits before anything is written, and only the
+  basename of an entry is ever used, so a crafted path cannot escape
+
 ## Running behind an authenticating proxy
 
 Set `TRUSTED_EMAIL_HEADER` and the app stops doing its own Google OAuth: it

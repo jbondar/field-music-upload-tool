@@ -137,3 +137,13 @@ button.link {
 .admin-table code { font-size: 0.85rem; }
 .tag { font-size: 0.7rem; padding: 0.1rem 0.4rem; border-radius: 99px;
        border: 1px solid var(--line); color: var(--muted); }
+
+.link-import { margin-top: 0.9rem; }
+.link-import label { display: block; margin-bottom: 0.4rem; }
+.link-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.link-row input { flex: 1 1 18rem; }
+#link-status { margin-top: 0.5rem; }
+#link-status.bad { color: var(--bad); }
+#link-status.ok { color: var(--ok); }
+.tracks-hint { margin-top: 1rem; margin-bottom: -0.4rem; }
+.tracks td.file.remote { font-style: italic; }

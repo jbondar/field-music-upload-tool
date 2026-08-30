@@ -110,7 +110,10 @@
       if (!AUDIO.has(extensionOf(file.name))) { rejected.push(file.name); continue; }
       if (queue.some((q) => q.file.name === file.name && q.file.size === file.size)) continue;
       const hint = parseHint(file.name);
-      queue.push({ file, track: hint.track, title: hint.title });
+      queue.push({
+        file, name: file.name, size: file.size,
+        track: hint.track, title: hint.title,
+      });
     }
     // Numbered files first in numeric order, then anything unnumbered in the
     // order it was dropped -- which is the order the tracks get filled into.
@@ -145,12 +148,13 @@
 
       const file = document.createElement("td");
       file.className = "file";
-      file.textContent = item.file.name;
-      file.title = item.file.name;
+      file.textContent = item.name;
+      file.title = item.name;
+      if (item.stored) file.classList.add("remote");
 
       const size = document.createElement("td");
       size.className = "s";
-      size.textContent = humanSize(item.file.size);
+      size.textContent = humanSize(item.size);
 
       const remove = document.createElement("td");
       const removeBtn = document.createElement("button");
@@ -165,7 +169,8 @@
     });
 
     $("tracks").hidden = queue.length === 0;
-    const total = queue.reduce((sum, q) => sum + q.file.size, 0);
+    $("tracks-hint").hidden = queue.length === 0;
+    const total = queue.reduce((sum, q) => sum + q.size, 0);
     $("summary").textContent = queue.length
       ? `${queue.length} file${queue.length > 1 ? "s" : ""}, ${humanSize(total)}`
       : "";
@@ -211,6 +216,116 @@
     $("results").appendChild(li);
   }
 
+  /* ------------------------------------------------------- fetch by link */
+
+  let fetchedSession = null;
+  let pollTimer = null;
+
+  function linkStatus(message, cls) {
+    const el = $("link-status");
+    el.hidden = !message;
+    el.textContent = message || "";
+    el.className = "muted small" + (cls ? " " + cls : "");
+  }
+
+  async function fetchFromLink() {
+    const url = $("link-url").value.trim();
+    if (!url) { linkStatus("Paste a link first.", "bad"); return; }
+
+    // The show details are needed before anything can be fetched: the server
+    // files it into a session, and a session is a show.
+    if (!$("show-form").reportValidity()) {
+      linkStatus("Fill in the show details above first.", "bad");
+      return;
+    }
+
+    $("link-fetch").disabled = true;
+    linkStatus("Starting…");
+
+    try {
+      if (!fetchedSession) {
+        const details = readDetails();
+        const session = await postJSON("/api/session", details);
+        if (!session.ok) throw new Error(session.error || "Could not start the upload.");
+        fetchedSession = session;
+        if (session.targetExists) {
+          linkStatus(`Heads up: “${session.folder}” already exists in the library.`, "bad");
+        }
+      }
+      const started = await postJSON(`/api/session/${fetchedSession.id}/fetch`, { url });
+      if (!started.ok) throw new Error(started.error || "That link could not be used.");
+      linkStatus(`Contacting ${started.label}…`);
+      poll();
+    } catch (err) {
+      linkStatus(err.message, "bad");
+      $("link-fetch").disabled = false;
+    }
+  }
+
+  function poll() {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(async () => {
+      let data;
+      try {
+        data = await postJSON(`/api/session/${fetchedSession.id}`, undefined, "GET");
+      } catch (err) {
+        linkStatus(err.message, "bad");
+        $("link-fetch").disabled = false;
+        return;
+      }
+      const f = data.fetch || {};
+
+      if (f.status === "error") {
+        linkStatus(f.message || "That download failed.", "bad");
+        $("link-fetch").disabled = false;
+        return;
+      }
+
+      if (f.status === "done") {
+        adoptFetched(data.files || []);
+        linkStatus(f.message || "Fetched.", "ok");
+        $("link-fetch").disabled = false;
+        $("link-url").value = "";
+        return;
+      }
+
+      let text = f.message || "Downloading…";
+      if (f.bytes) {
+        text += f.total
+          ? ` ${humanSize(f.bytes)} of ${humanSize(f.total)}`
+          : ` ${humanSize(f.bytes)}`;
+      }
+      linkStatus(text);
+      poll();
+    }, 1500);
+  }
+
+  function adoptFetched(files) {
+    // Replace rather than append: a re-fetch into the same session returns
+    // the full list, so appending would double every track.
+    const local = queue.filter((item) => !item.stored);
+    const remote = files.map((f) => {
+      const hint = parseHint(f.original || f.stored);
+      return {
+        stored: f.stored,
+        name: f.original || f.stored,
+        size: f.size || 0,
+        track: f.track || hint.track,
+        title: f.title || hint.title,
+      };
+    });
+    queue = local.concat(remote);
+    renderTracks();
+  }
+
+  function readDetails() {
+    return {
+      artist: $("artist").value, date: $("date").value, venue: $("venue").value,
+      city: $("city").value, state: $("state").value, genre: $("genre").value,
+      taper: $("taper").value, source: $("source").value,
+    };
+  }
+
   async function submit(event) {
     event.preventDefault();
     if (!queue.length) return;
@@ -225,15 +340,11 @@
     $("bar-fill").style.width = "0%";
     $("progress-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
 
-    const details = {
-      artist: $("artist").value, date: $("date").value, venue: $("venue").value,
-      city: $("city").value, state: $("state").value, genre: $("genre").value,
-      taper: $("taper").value, source: $("source").value,
-    };
+    const details = readDetails();
 
     let session;
     try {
-      session = await postJSON("/api/session", details);
+      session = fetchedSession || await postJSON("/api/session", details);
       if (!session.ok) throw new Error(session.error || "Could not start the upload.");
     } catch (err) {
       note(err.message, "bad");
@@ -246,29 +357,34 @@
            `The upload will be held for review rather than overwrite it.`, "bad");
     }
 
-    const totalBytes = queue.reduce((sum, q) => sum + q.file.size, 0);
+    const totalBytes = queue.reduce((sum, q) => sum + (q.stored ? 0 : q.size), 0);
     let doneBytes = 0;
     const stored = {};
     let failed = 0;
 
     for (const item of queue) {
+      if (item.stored) {
+        // Fetched from a share link: already on the NAS, nothing to send.
+        stored[item.stored] = { track: item.track, title: item.title };
+        continue;
+      }
       try {
         const result = await putFile(session.id, item, (loaded) => {
           const pct = ((doneBytes + loaded) / totalBytes) * 100;
           $("bar-fill").style.width = Math.min(99, pct) + "%";
           $("progress-detail").textContent =
-            `${item.file.name} — ${humanSize(doneBytes + loaded)} of ${humanSize(totalBytes)}`;
+            `${item.name} — ${humanSize(doneBytes + loaded)} of ${humanSize(totalBytes)}`;
         });
-        doneBytes += item.file.size;
+        doneBytes += item.size;
         stored[result.stored] = { track: item.track, title: item.title };
-        note(`${item.file.name} uploaded`, "ok");
+        note(`${item.name} uploaded`, "ok");
       } catch (err) {
         failed++;
-        note(`${item.file.name}: ${err.message}`, "bad");
+        note(`${item.name}: ${err.message}`, "bad");
       }
     }
 
-    if (failed === queue.length) {
+    if (!Object.keys(stored).length) {
       $("progress-title").textContent = "Upload failed";
       $("submit").disabled = false;
       return;
@@ -285,6 +401,7 @@
         $("progress-detail").textContent = `Added to the library as ${result.folder}`;
         note("This show is now in the library. Thanks!", "ok");
         queue = [];
+        fetchedSession = null;
         renderTracks();
       } else {
         $("progress-title").textContent = "Held for review";
@@ -407,6 +524,13 @@
     });
 
     $("show-form").addEventListener("submit", submit);
+
+    $("link-fetch").addEventListener("click", fetchFromLink);
+    $("link-url").addEventListener("keydown", (e) => {
+      // Enter in the link box must not submit the show form behind it.
+      if (e.key === "Enter") { e.preventDefault(); fetchFromLink(); }
+    });
+
 
     // A partly-uploaded show leaves orphaned files in staging, so make leaving
     // mid-upload a deliberate act.

@@ -7,9 +7,11 @@ browser will see -- links, form actions, cookie paths, the OAuth redirect.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +26,10 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, metadata, naming, storage
+from . import auth, importer, metadata, naming, storage
 from .config import config
 from .invites import AccessStore, RedeemError, normalize_code
+from .storage import UploadError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("upload")
@@ -320,6 +323,188 @@ async def upload_file(session_id: str, request: Request) -> Response:
     )
 
 
+async def _run_fetch(session_id: str, raw_url: str) -> None:
+    """Download a share link into the session, in the background.
+
+    Runs detached from the request because a show is gigabytes: the page polls
+    the session for progress rather than holding a connection open for the
+    length of the transfer.
+    """
+    try:
+        source = importer.normalize(raw_url)
+    except importer.ImportError_ as exc:
+        await to_thread.run_sync(
+            lambda: store.set_fetch(session_id, status="error", message=str(exc))
+        )
+        return
+
+    await to_thread.run_sync(
+        lambda: store.set_fetch(
+            session_id, status="running", label=source.label,
+            message=f"Contacting {source.label}…", bytes=0, total=0, files=0,
+        )
+    )
+
+    fetcher = importer.Fetcher()
+    try:
+        response, client, filename = await fetcher.open(source)
+    except importer.ImportError_ as exc:
+        await to_thread.run_sync(
+            lambda: store.set_fetch(session_id, status="error", message=str(exc))
+        )
+        return
+
+    total = int(response.headers.get("content-length") or 0)
+    try:
+        first, stream = await importer.peeked_stream(response)
+
+        if importer.looks_like_zip(first):
+            await _fetch_zip(session_id, source, stream, filename, total)
+        else:
+            await _fetch_single(session_id, source, stream, filename, total)
+    except importer.ImportError_ as exc:
+        await to_thread.run_sync(
+            lambda: store.set_fetch(session_id, status="error", message=str(exc))
+        )
+    except UploadError as exc:
+        await to_thread.run_sync(
+            lambda: store.set_fetch(session_id, status="error", message=str(exc))
+        )
+    except Exception:
+        log.exception("fetch failed for session %s", session_id)
+        await to_thread.run_sync(
+            lambda: store.set_fetch(
+                session_id, status="error",
+                message="That download failed part way through. Try again.",
+            )
+        )
+    finally:
+        await response.aclose()
+        await client.aclose()
+
+
+async def _fetch_single(
+    session_id: str, source: importer.Source, stream, filename: str, total: int
+) -> None:
+    if Path(filename).suffix.lower() not in naming.AUDIO_EXTENSIONS:
+        raise importer.ImportError_(
+            f"{filename} is not an audio file. Share the audio itself, or a "
+            "folder or zip of it."
+        )
+
+    seen = 0
+
+    async def counted():
+        nonlocal seen
+        async for chunk in stream:
+            seen += len(chunk)
+            # Cheap enough at 1 MiB a tick, and it is the only feedback the
+            # page has during a multi-gigabyte transfer.
+            await to_thread.run_sync(
+                lambda: store.set_fetch(session_id, bytes=seen, total=total)
+            )
+            yield chunk
+
+    entry = await store.store_stream_async(session_id, filename, counted())
+    await to_thread.run_sync(
+        lambda: store.set_fetch(
+            session_id, status="done", files=1, bytes=entry.size, total=entry.size,
+            message=f"Fetched {entry.original} from {source.label}.",
+        )
+    )
+
+
+async def _fetch_zip(
+    session_id: str, source: importer.Source, stream, filename: str, total: int
+) -> None:
+    """A shared folder arrives as a zip, so this is the normal path.
+
+    The archive is spooled to disk first: reading zip entries needs to seek,
+    which a stream cannot do.
+    """
+    import tempfile
+    import zipfile
+
+    await to_thread.run_sync(
+        lambda: store.set_fetch(
+            session_id, message=f"Downloading the archive from {source.label}…"
+        )
+    )
+
+    budget = config.max_show_bytes
+    spool = Path(tempfile.mkdtemp(prefix="fetch-", dir=str(config.staging_dir)))
+    archive_path = spool / "download.zip"
+    seen = 0
+    try:
+        handle = await to_thread.run_sync(archive_path.open, "wb")
+        try:
+            async for chunk in stream:
+                seen += len(chunk)
+                if seen > budget:
+                    raise importer.ImportError_(
+                        "That download is larger than a single show is allowed."
+                    )
+                await to_thread.run_sync(handle.write, chunk)
+                await to_thread.run_sync(
+                    lambda: store.set_fetch(session_id, bytes=seen, total=total)
+                )
+        finally:
+            await to_thread.run_sync(handle.close)
+
+        def extract() -> int:
+            with zipfile.ZipFile(archive_path) as archive:
+                members = importer.audio_members(
+                    archive,
+                    max_files=config.max_files_per_show,
+                    max_total_bytes=config.max_show_bytes,
+                )
+                for index, info in enumerate(members, start=1):
+                    name = Path(info.filename.replace("\\", "/")).name
+                    store.store_stream(
+                        session_id, name, importer.member_chunks(archive, info)
+                    )
+                    store.set_fetch(
+                        session_id, files=index,
+                        message=f"Unpacking {index} of {len(members)}…",
+                    )
+                return len(members)
+
+        count = await to_thread.run_sync(extract)
+    finally:
+        await to_thread.run_sync(lambda: shutil.rmtree(spool, ignore_errors=True))
+
+    await to_thread.run_sync(
+        lambda: store.set_fetch(
+            session_id, status="done", files=count,
+            message=f"Fetched {count} tracks from {source.label}.",
+        )
+    )
+
+
+@app.post("/api/session/{session_id}/fetch")
+async def fetch_link(session_id: str, request: Request) -> Response:
+    _require_uploader(request)
+    payload = await request.json()
+    url = str(payload.get("url", "")).strip()
+    if not url:
+        return _json_error("Paste a link first.")
+
+    # Fail fast on a link we will never accept, so the page can say so at once
+    # instead of showing a spinner that resolves into the same message.
+    try:
+        source = importer.normalize(url)
+    except importer.ImportError_ as exc:
+        return _json_error(str(exc))
+
+    manifest = await to_thread.run_sync(store.load, session_id)
+    if manifest.fetch.get("status") == "running":
+        return _json_error("A download is already running for this show.")
+
+    asyncio.create_task(_run_fetch(session_id, url))
+    log.info("fetch started for %s from %s", session_id, source.label)
+    return JSONResponse({"ok": True, "label": source.label})
+
+
 @app.post("/api/session/{session_id}/finalize")
 async def finalize(session_id: str, request: Request) -> Response:
     _require_uploader(request)
@@ -345,7 +530,13 @@ async def session_status(session_id: str, request: Request) -> Response:
     _require_uploader(request)
     manifest = await to_thread.run_sync(store.load, session_id)
     return JSONResponse(
-        {"ok": True, "status": manifest.status, "errors": manifest.errors, "files": manifest.files}
+        {
+            "ok": True,
+            "status": manifest.status,
+            "errors": manifest.errors,
+            "files": manifest.files,
+            "fetch": manifest.fetch,
+        }
     )
 
 
