@@ -46,7 +46,10 @@
       <div class="grid">
         <p class="field span2">
           <label for="artist">Artist <span class="req">*</span></label>
-          <input id="artist" name="artist" required autocomplete="off" placeholder="Geese">
+          <input id="artist" name="artist" required autocomplete="off"
+                 list="known-artists" placeholder="Geese">
+          <datalist id="known-artists"></datalist>
+          <span class="artist-note" id="artist-note" hidden></span>
         </p>
         <p class="field">
           <label for="date">Date <span class="req">*</span></label>
@@ -155,6 +158,9 @@
     <p id="admin-access-elsewhere" class="muted" hidden>
       Access is managed at <a id="admin-access-link" href="/">the sign-in service</a>.
     </p>
+
+    <h2 id="dupes-heading" hidden>Artist folders that look like duplicates</h2>
+    <table class="admin-table" id="dupes" hidden></table>
 
     <h2>Recent uploads</h2>
     <table class="admin-table" id="uploads"></table>

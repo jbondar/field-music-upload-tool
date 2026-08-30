@@ -570,6 +570,39 @@ async def fetch_choose(session_id: str, request: Request) -> Response:
     return JSONResponse({"ok": True, "files": count, "fetch": fetch})
 
 
+@app.get("/api/artists")
+async def artists(request: Request) -> Response:
+    """Artist folders already in the library, for matching what is typed.
+
+    The page needs the real list because folding happens on the server: typing
+    "cameronwinter" files the show under the existing "Cameron Winter", and a
+    preview that still said "cameronwinter" would be showing a path that never
+    gets created.
+    """
+    _require_uploader(request)
+    names = await to_thread.run_sync(naming.list_artists, config.music_dir)
+    return JSONResponse({"ok": True, "artists": names})
+
+
+@app.get("/api/artist-match")
+async def artist_match(request: Request, name: str = "") -> Response:
+    """Where a given artist name would actually be filed."""
+    _require_uploader(request)
+    name = (name or "").strip()
+    if not name:
+        return JSONResponse({"ok": True, "resolved": "", "existing": False, "similar": []})
+
+    def look() -> tuple[str, bool, list[str]]:
+        path, existed = naming.resolve_artist_dir(config.music_dir, name)
+        known = naming.list_artists(config.music_dir)
+        return path.name, existed, naming.similar_artists(name, known)
+
+    resolved, existing, similar = await to_thread.run_sync(look)
+    return JSONResponse(
+        {"ok": True, "resolved": resolved, "existing": existing, "similar": similar}
+    )
+
+
 @app.post("/api/inspect-link")
 async def inspect_link(request: Request) -> Response:
     """Guess the show's details from a share link, without downloading it.
@@ -734,6 +767,12 @@ async def admin_state(request: Request) -> Response:
                 for i in access.list_invites()
             ],
             "allowed": access.list_allowed(),
+            # Folders that are really the same artist. Folding stops these
+            # being created, but one made by hand or predating this tool can
+            # still be sitting there splitting a discography in two.
+            "duplicateArtists": await to_thread.run_sync(
+                naming.duplicate_artist_folders, config.music_dir
+            ),
             "uploads": [
                 {
                     "id": m.id,

@@ -69,9 +69,142 @@
     return `${artist} - ${stamp}${tail ? " " + tail : ""}`;
   }
 
+  /* ------------------------------------------------------------ artists */
+
+  let knownArtists = [];
+  let artistTimer = null;
+
+  // Mirrors naming._fold on the server. Case, punctuation and a leading
+  // "the"/"a"/"an" are all noise: "cameronwinter", "Cameron Winter" and
+  // "The Cameron Winter" are one artist and belong in one folder.
+  function foldArtist(value) {
+    return (value || "")
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/\b(the|a|an)\b/g, " ")
+      .replace(/[^a-z0-9]+/g, "");
+  }
+
+  function resolveArtist(typed) {
+    // What the server will actually do, worked out locally so the preview
+    // never promises a folder that will not be created.
+    const key = foldArtist(typed);
+    if (!key) return { resolved: "", existing: false, similar: [] };
+    const hit = knownArtists.find((name) => foldArtist(name) === key);
+    if (hit) return { resolved: hit, existing: true, similar: [] };
+
+    const similar = knownArtists
+      .map((name) => {
+        const other = foldArtist(name);
+        let score = ratio(key, other);
+        if (other && (key.includes(other) || other.includes(key))) score = Math.max(score, 0.9);
+        return { name, score };
+      })
+      .filter((c) => c.score >= 0.82)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map((c) => c.name);
+
+    return { resolved: sanitize(typed), existing: false, similar };
+  }
+
+  // Dice coefficient over character bigrams: close enough to difflib for
+  // "did you mean", and short enough to not need a library.
+  function ratio(a, b) {
+    if (a === b) return 1;
+    if (a.length < 2 || b.length < 2) return 0;
+    const pairs = (s) => {
+      const out = new Map();
+      for (let i = 0; i < s.length - 1; i++) {
+        const p = s.slice(i, i + 2);
+        out.set(p, (out.get(p) || 0) + 1);
+      }
+      return out;
+    };
+    const pa = pairs(a), pb = pairs(b);
+    let hits = 0, total = 0;
+    pa.forEach((count, pair) => {
+      total += count;
+      const other = pb.get(pair) || 0;
+      hits += Math.min(count, other);
+    });
+    pb.forEach((count) => { total += count; });
+    return total ? (2 * hits) / total : 0;
+  }
+
+  function renderArtistNote() {
+    const note = $("artist-note");
+    const typed = $("artist").value.trim();
+    note.textContent = "";
+    note.className = "artist-note";
+    if (!typed) { note.hidden = true; return; }
+
+    const match = resolveArtist(typed);
+    if (match.existing && match.resolved !== typed) {
+      // The library already has this artist under a different spelling, and
+      // that is where the show is going. Say so rather than let the preview
+      // show a folder that will never exist.
+      note.hidden = false;
+      note.className = "artist-note match";
+      note.textContent = `Filing under the existing “${match.resolved}”.`;
+      return;
+    }
+    if (match.existing) {
+      note.hidden = false;
+      note.className = "artist-note match";
+      note.textContent = "Already in the library.";
+      return;
+    }
+    if (match.similar.length) {
+      note.hidden = false;
+      note.className = "artist-note near";
+      note.append(document.createTextNode("New artist. Did you mean "));
+      match.similar.forEach((name, i) => {
+        if (i) note.append(document.createTextNode(i === match.similar.length - 1 ? " or " : ", "));
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = name;
+        button.addEventListener("click", () => {
+          $("artist").value = name;
+          renderArtistNote();
+          updatePreview();
+        });
+        note.append(button);
+      });
+      note.append(document.createTextNode("?"));
+      return;
+    }
+    note.hidden = false;
+    note.className = "artist-note near";
+    note.textContent = "New artist — a folder will be created.";
+  }
+
+  async function loadArtists() {
+    try {
+      const data = await postJSON("/api/artists", undefined, "GET");
+      if (!data.ok) return;
+      knownArtists = data.artists || [];
+      const list = $("known-artists");
+      list.textContent = "";
+      knownArtists.forEach((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        list.appendChild(option);
+      });
+      renderArtistNote();
+      updatePreview();
+    } catch (_) {
+      // Autocomplete is a convenience; the server still folds correctly.
+    }
+  }
+
   function updatePreview() {
     const name = folderName();
-    const artist = sanitize($("artist").value);
+    const typed = $("artist").value.trim();
+    // Show the folder the show will really land in, not the one that was
+    // typed -- those differ whenever an existing artist is spelled another way.
+    const artist = typed ? resolveArtist(typed).resolved : "";
     $("preview").hidden = !name || !artist;
     $("preview-path").textContent = `Music/${artist}/${name}/`;
   }
@@ -152,7 +285,7 @@
       el.classList.add("guessed");
       filled.push(key);
     });
-    if (filled.length) updatePreview();
+    if (filled.length) { renderArtistNote(); updatePreview(); }
     return filled;
   }
 
@@ -773,6 +906,14 @@
         }),
       ]));
 
+    const dupes = data.duplicateArtists || [];
+    $("dupes-heading").hidden = dupes.length === 0;
+    $("dupes").hidden = dupes.length === 0;
+    if (dupes.length) {
+      fillTable($("dupes"), ["These folders are the same artist"],
+        dupes.map((group) => [group.join("  ·  ")]));
+    }
+
     fillTable($("uploads"), ["When", "Who", "Show", "Files", "Status", ""],
       data.uploads.map((u) => {
         const retry = u.status === "promoted" ? "" : actionButton("retry", async () => {
@@ -793,8 +934,18 @@
   showView();
 
   if (state.allowed) {
+    loadArtists();
     ["artist", "date", "venue", "city", "state"].forEach((id) =>
       $(id).addEventListener("input", updatePreview));
+
+    // Debounced: retyping an artist should not repaint the note on every
+    // keystroke, but it must settle before the form is submitted.
+    $("artist").addEventListener("input", () => {
+      clearTimeout(artistTimer);
+      artistTimer = setTimeout(renderArtistNote, 250);
+    });
+    $("artist").addEventListener("change", renderArtistNote);
+    $("artist").addEventListener("blur", renderArtistNote);
 
     const drop = $("drop");
     const picker = $("picker");

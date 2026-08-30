@@ -12,9 +12,11 @@ just make sure everything *new* lands in the dominant form.
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 import re
 import unicodedata
 from pathlib import Path
+from typing import Iterable
 
 # Characters that are illegal or hostile on the NAS share. The library is
 # exported over SMB/CIFS, which rejects these outright regardless of what the
@@ -224,6 +226,56 @@ def _fold(value: str) -> str:
     text = re.sub(r"\b(the|a|an)\b", " ", text.casefold())
     text = re.sub(r"[^a-z0-9]+", "", text)
     return text
+
+
+def list_artists(music_dir: Path) -> list[str]:
+    """Every artist folder in the library, for matching against what is typed."""
+    try:
+        return sorted(
+            (p.name for p in music_dir.iterdir() if p.is_dir() and not p.name.startswith(".")),
+            key=str.casefold,
+        )
+    except (OSError, FileNotFoundError):
+        return []
+
+
+def similar_artists(artist: str, known: Iterable[str], *, limit: int = 3) -> list[str]:
+    """Existing folders close enough to `artist` to be worth asking about.
+
+    This is for the near miss that folding does not catch -- "Cameron Winters"
+    against "Cameron Winter", a typo, a missing word. An exact fold match is
+    not a near miss and is excluded: that one is handled, not questioned.
+    """
+    key = _fold(artist)
+    if not key:
+        return []
+    scored = []
+    for name in known:
+        other = _fold(name)
+        if not other or other == key:
+            continue
+        ratio = difflib.SequenceMatcher(None, key, other).ratio()
+        # One folded name containing the other is a strong signal on its own:
+        # "billystrings" inside "billystringsband" scores poorly by ratio but
+        # is almost certainly the same act.
+        if key in other or other in key:
+            ratio = max(ratio, 0.9)
+        if ratio >= 0.82:
+            scored.append((ratio, name))
+    scored.sort(key=lambda pair: (-pair[0], pair[1].casefold()))
+    return [name for _, name in scored[:limit]]
+
+
+def duplicate_artist_folders(music_dir: Path) -> list[list[str]]:
+    """Groups of existing folders that are really the same artist.
+
+    Folding happens when a show is filed, so these should not accumulate --
+    but a folder made by hand, or before this tool existed, still can.
+    """
+    groups: dict[str, list[str]] = {}
+    for name in list_artists(music_dir):
+        groups.setdefault(_fold(name), []).append(name)
+    return [sorted(names) for names in groups.values() if len(names) > 1]
 
 
 def resolve_artist_dir(music_dir: Path, artist: str) -> tuple[Path, bool]:

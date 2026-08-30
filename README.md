@@ -48,6 +48,37 @@ app/
 tests/          pytest, including a full receive-to-filed run
 ```
 
+## Matching the artist against the library
+
+Typing "cameronwinter" when `Cameron Winter/` already exists has always filed
+the show correctly -- artist folders are matched with case, punctuation and a
+leading "the" folded away. What was missing was any sign of it: the page
+previewed `Music/cameronwinter/`, a folder that would never be created.
+
+The artist field now autocompletes from the real folder list and says what
+will happen:
+
+- an existing artist under another spelling: *Filing under the existing
+  "Cameron Winter".*
+- a close but different name: *New artist. Did you mean Cameron Winter?* --
+  click to take it
+- anything else: *New artist -- a folder will be created.*
+
+The preview path shows the resolved folder, not the typed one.
+
+The near-miss check is deliberately separate from folding. A fold match is
+handled, not questionable, so it is never offered as a suggestion; and a false
+"did you mean" is worse than none, since it invites filing a new band under
+someone else's name.
+
+`GET /api/artists` and `GET /api/artist-match?name=` back this. The client
+mirrors the fold so the preview updates without a round trip per keystroke;
+the two are checked against each other in `tests/test_artists.py`.
+
+The admin panel lists any artist folders that are really the same artist.
+Folding stops new ones being created, but a folder made by hand or predating
+this tool can still split a discography in two.
+
 ## Showing that it landed in Plex
 
 Filing a folder onto the NAS is only most of the job -- until Plex has scanned

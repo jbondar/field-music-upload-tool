@@ -163,3 +163,9 @@ input.guessed:focus { background: var(--bg); }
 .plex-row { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap;
             margin-top: 0.8rem; }
 .plex-row #plex-status { font-size: 0.9rem; color: var(--muted); }
+
+.artist-note { display: block; margin-top: 0.3rem; font-size: 0.82rem; }
+.artist-note.match { color: var(--ok); }
+.artist-note.near { color: var(--muted); }
+.artist-note button { font: inherit; background: none; border: 0; padding: 0;
+                      color: var(--accent); cursor: pointer; text-decoration: underline; }
