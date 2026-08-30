@@ -1,0 +1,25 @@
+# Secrets — the Google client secret and session key live here.
+.env
+.env.*
+!.env.example
+
+# Runtime state written by the container: allowlist.json, invites.json,
+# staging manifests. Never belongs in git.
+state/
+staging/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

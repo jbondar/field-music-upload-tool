@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upload a Show</title>
+<link rel="stylesheet" href="__BASE_PATH__/static/style.css">
+</head>
+<body data-state="__STATE__">
+
+<header class="bar">
+  <h1>Upload a Show</h1>
+  <div class="who" id="who" hidden>
+    <span id="who-name"></span>
+    <a class="admin-link" id="admin-link" href="#admin" hidden>admin</a>
+    <form method="post" action="__BASE_PATH__/logout"><button class="link">sign out</button></form>
+  </div>
+</header>
+
+<main>
+  <!-- Not signed in -->
+  <section id="view-signin" hidden>
+    <p class="lede">Recorded a set? Put it straight on the shelf, filed and tagged the way the
+      rest of the library is.</p>
+    <a class="btn primary" href="__BASE_PATH__/login">Sign in with Google</a>
+    <p class="muted small" id="unconfigured" hidden>Sign-in is not configured on the server yet.</p>
+  </section>
+
+  <!-- Signed in, not on the list -->
+  <section id="view-invite" hidden>
+    <p class="lede">You're signed in as <strong id="invite-email"></strong>, but that account
+      isn't on the upload list yet.</p>
+    <form method="post" action="__BASE_PATH__/redeem" class="invite-form">
+      <label for="code">Invite code</label>
+      <input id="code" name="code" placeholder="ABCD-2345" autocomplete="off"
+             spellcheck="false" required>
+      <button class="btn primary" type="submit">Redeem</button>
+    </form>
+    <p class="muted small">No code? Ask Jake for one.</p>
+  </section>
+
+  <!-- The upload form -->
+  <section id="view-upload" hidden>
+    <form id="show-form" class="card">
+      <h2>The show</h2>
+      <div class="grid">
+        <p class="field span2">
+          <label for="artist">Artist <span class="req">*</span></label>
+          <input id="artist" name="artist" required autocomplete="off" placeholder="Geese">
+        </p>
+        <p class="field">
+          <label for="date">Date <span class="req">*</span></label>
+          <input id="date" name="date" type="date" required>
+        </p>
+        <p class="field">
+          <label for="genre">Genre</label>
+          <input id="genre" name="genre" autocomplete="off" placeholder="Rock">
+        </p>
+        <p class="field span2">
+          <label for="venue">Venue</label>
+          <input id="venue" name="venue" autocomplete="off" placeholder="Thalia Hall">
+        </p>
+        <p class="field">
+          <label for="city">City</label>
+          <input id="city" name="city" autocomplete="off" placeholder="Chicago">
+        </p>
+        <p class="field">
+          <label for="state">State</label>
+          <input id="state" name="state" autocomplete="off" placeholder="IL" maxlength="20">
+        </p>
+        <p class="field">
+          <label for="taper">Taper</label>
+          <input id="taper" name="taper" autocomplete="off" placeholder="who recorded it">
+        </p>
+        <p class="field">
+          <label for="source">Source</label>
+          <input id="source" name="source" autocomplete="off" placeholder="AUD, SBD, matrix…">
+        </p>
+      </div>
+
+      <p class="preview" id="preview" hidden>
+        Will be filed as <code id="preview-path"></code>
+      </p>
+
+      <h2>The files</h2>
+      <div class="drop" id="drop" tabindex="0" role="button"
+           aria-label="Choose audio files to upload">
+        <input type="file" id="picker" multiple hidden>
+        <p><strong>Drop audio files here</strong> or click to choose</p>
+        <p class="muted small" id="limits"></p>
+      </div>
+
+      <table class="tracks" id="tracks" hidden>
+        <thead><tr><th class="n">#</th><th>Title</th><th>File</th><th class="s">Size</th><th></th></tr></thead>
+        <tbody id="tracks-body"></tbody>
+      </table>
+
+      <div class="actions">
+        <button class="btn primary" id="submit" type="submit" disabled>Upload show</button>
+        <span class="muted small" id="summary"></span>
+      </div>
+    </form>
+
+    <div class="card progress-card" id="progress-card" hidden>
+      <h2 id="progress-title">Uploading…</h2>
+      <div class="bar-track"><div class="bar-fill" id="bar-fill"></div></div>
+      <p class="muted small" id="progress-detail"></p>
+      <ul class="results" id="results"></ul>
+    </div>
+  </section>
+
+  <!-- Admin -->
+  <section id="view-admin" class="card" hidden>
+    <h2>Invite codes</h2>
+    <form id="invite-form" class="inline">
+      <input id="invite-note" placeholder="who is this for?" autocomplete="off">
+      <input id="invite-uses" type="number" min="1" max="50" value="1" title="uses">
+      <button class="btn" type="submit">Create code</button>
+    </form>
+    <table class="admin-table" id="invites"></table>
+
+    <h2>Who can upload</h2>
+    <table class="admin-table" id="allowed"></table>
+
+    <h2>Recent uploads</h2>
+    <table class="admin-table" id="uploads"></table>
+  </section>
+</main>
+
+<script src="__BASE_PATH__/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+# Standalone compose for running the tool on its own.
+# In the homelab it is instead a service in web-services/apps/docker-compose.yml.
+services:
+  upload:
+    build: .
+    image: field-music-upload:local
+    ports:
+      # Behind a reverse proxy, bind to loopback only: "127.0.0.1:8000:8000".
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ${MUSIC_HOST_DIR:-./dev/music}:/music
+      - ${STAGING_HOST_DIR:-./dev/staging}:/staging
+      - ${STATE_HOST_DIR:-./dev/state}:/state
+    restart: unless-stopped
