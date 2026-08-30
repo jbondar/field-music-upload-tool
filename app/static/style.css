@@ -147,3 +147,15 @@ button.link {
 #link-status.ok { color: var(--ok); }
 .tracks-hint { margin-top: 1rem; margin-bottom: -0.4rem; }
 .tracks td.file.remote { font-style: italic; }
+
+.cover-row { margin-top: 0.9rem; }
+/* A field the page guessed, so it reads as provisional until confirmed. */
+input.guessed { background: color-mix(in srgb, var(--accent) 8%, var(--bg)); }
+input.guessed:focus { background: var(--bg); }
+
+.link-choices { display: grid; gap: 0.5rem; margin-top: 0.7rem; }
+.link-choice { display: flex; gap: 0.75rem; align-items: center; justify-content: space-between;
+               border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.8rem; }
+.link-choice .what { min-width: 0; }
+.link-choice .what strong { display: block; overflow: hidden;
+                            text-overflow: ellipsis; white-space: nowrap; }

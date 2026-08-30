@@ -247,6 +247,84 @@ def looks_like_zip(first_chunk: bytes) -> bool:
     return first_chunk.startswith(_ZIP_MAGIC)
 
 
+def _entry_name(info: zipfile.ZipInfo) -> str:
+    return info.filename.replace("\\", "/")
+
+
+def _usable(info: zipfile.ZipInfo) -> bool:
+    if info.is_dir():
+        return False
+    name = _entry_name(info)
+    base = Path(name).name
+    return bool(base) and not base.startswith(".") and "__MACOSX" not in name
+
+
+def _top_level(name: str) -> str:
+    parts = [p for p in name.split("/") if p]
+    return parts[0] if len(parts) > 1 else ""
+
+
+@dataclass
+class Group:
+    """One show inside an archive.
+
+    A shared folder frequently holds several: two nights of a run, or the same
+    night from two tapers. Merging them into one folder would be silently
+    wrong, so each is offered separately and the uploader picks.
+    """
+
+    key: str                      # top-level directory, "" for the archive root
+    members: list[zipfile.ZipInfo]
+    cover: zipfile.ZipInfo | None = None
+
+    @property
+    def label(self) -> str:
+        return self.key or "the archive itself"
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(m.file_size for m in self.members)
+
+
+def show_groups(archive: zipfile.ZipFile) -> list[Group]:
+    """Split an archive into the shows it holds, one per top-level folder."""
+    audio: dict[str, list[zipfile.ZipInfo]] = {}
+    images: dict[str, list[zipfile.ZipInfo]] = {}
+    for info in archive.infolist():
+        if not _usable(info):
+            continue
+        name = _entry_name(info)
+        suffix = Path(name).suffix.lower()
+        if suffix in naming.AUDIO_EXTENSIONS:
+            audio.setdefault(_top_level(name), []).append(info)
+        elif suffix in naming.IMAGE_EXTENSIONS and info.file_size <= naming.MAX_COVER_BYTES:
+            images.setdefault(_top_level(name), []).append(info)
+
+    groups = []
+    for key in sorted(audio):
+        members = sorted(audio[key], key=lambda i: Path(_entry_name(i)).name.lower())
+        # A poster in the show's own folder wins; one at the archive root is
+        # the fallback, since a single cover often sits alongside the folders.
+        candidates = images.get(key) or images.get("") or []
+        cover = max(candidates, key=lambda i: i.file_size) if candidates else None
+        groups.append(Group(key=key, members=members, cover=cover))
+    return groups
+
+
+def check_group(group: Group, *, max_files: int, max_total_bytes: int) -> list[zipfile.ZipInfo]:
+    """The limits, enforced against declared sizes before anything is written."""
+    if not group.members:
+        raise ImportError_(
+            "That archive has no audio files in it. Supported: "
+            + ", ".join(sorted(naming.AUDIO_EXTENSIONS))
+        )
+    if len(group.members) > max_files:
+        raise ImportError_(f"That archive holds more than {max_files} audio files.")
+    if group.total_bytes > max_total_bytes:
+        raise ImportError_("That archive holds more audio than a single show is allowed.")
+    return group.members
+
+
 def audio_members(
     archive: zipfile.ZipFile, *, max_files: int, max_total_bytes: int
 ) -> list[zipfile.ZipInfo]:
@@ -287,6 +365,32 @@ def audio_members(
         )
     members.sort(key=lambda i: Path(i.filename).name.lower())
     return members
+
+
+def cover_member(archive: zipfile.ZipFile) -> zipfile.ZipInfo | None:
+    """The poster, if the folder came with one.
+
+    A show shared as a folder often has the gig poster or a photo sitting
+    beside the audio, and that is worth keeping: it becomes cover.jpg next to
+    the tracks, which is where Plex and Lidarr look. The largest image wins,
+    on the assumption that the big one is the artwork and any small one is a
+    thumbnail or a logo.
+    """
+    best: zipfile.ZipInfo | None = None
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        name = info.filename.replace("\\", "/")
+        base = Path(name).name
+        if not base or base.startswith(".") or "__MACOSX" in name:
+            continue
+        if Path(base).suffix.lower() not in naming.IMAGE_EXTENSIONS:
+            continue
+        if info.file_size > naming.MAX_COVER_BYTES:
+            continue
+        if best is None or info.file_size > best.file_size:
+            best = info
+    return best
 
 
 def member_chunks(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> Iterator[bytes]:

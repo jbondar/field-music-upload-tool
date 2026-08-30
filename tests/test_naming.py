@@ -88,3 +88,48 @@ def test_audio_extension_filter():
     assert naming.audio_extension("a.FLAC") == ".flac"
     assert naming.audio_extension("a.exe") is None
     assert naming.audio_extension("no-extension") is None
+
+
+# --- names as they actually arrive from a shared folder ---------------------
+
+def test_a_bare_space_after_a_padded_number_is_a_track_number():
+    """Official and nugs-sourced releases name tracks "01 Title", with no
+    separator. Refusing that meant every real download arrived unnumbered."""
+    assert naming.parse_track_hint("01 Sandbag.flac") == (1, "Sandbag")
+    assert naming.parse_track_hint("13 Cancer of the Skull.flac") == (13, "Cancer of the Skull")
+
+
+def test_an_unpadded_leading_number_is_still_part_of_the_title():
+    """The zero padding is what makes the digits positional. Without it they
+    are as likely to be the song."""
+    assert naming.parse_track_hint("100 Horses.flac") == (None, "100 Horses")
+    assert naming.parse_track_hint("1979.flac") == (None, "1979")
+
+
+def test_a_two_digit_song_title_is_the_accepted_cost():
+    """"99 Luftballons" reads as track 99. The fields are editable and
+    labelled as such, which is a better trade than leaving every real show
+    unnumbered."""
+    assert naming.parse_track_hint("99 Luftballons.flac") == (99, "Luftballons")
+
+
+def test_a_redundant_live_suffix_is_dropped():
+    """The folder already says where it was recorded, and no track in this
+    library carries it."""
+    assert naming.parse_track_hint("01 Sandbag (Live at Rockefeller Chapel).flac") == (1, "Sandbag")
+    assert naming.parse_track_hint("02 Try as I May (Live in Durham).mp3") == (2, "Try as I May")
+
+
+def test_a_qualifier_that_is_not_a_venue_is_kept():
+    assert naming.parse_track_hint(
+        "13 Cancer of the Skull (Encore) (Live at Rockefeller Chapel).flac"
+    ) == (13, "Cancer of the Skull (Encore)")
+    assert naming.parse_track_hint("05 Sandbag (Acoustic).flac") == (5, "Sandbag (Acoustic)")
+
+
+def test_the_existing_separators_still_win_over_the_padded_form():
+    assert naming.parse_track_hint("01. Husbands.flac") == (1, "Husbands")
+    assert naming.parse_track_hint("1-04 Deal.flac") == (4, "Deal")
+    assert naming.parse_track_hint("2_11 Terrapin Station.mp3") == (11, "Terrapin Station")
+    # The trailing-dot case that CIFS sanitising used to eat.
+    assert naming.parse_track_hint("07. E.M.D..flac") == (7, "E.M.D.")

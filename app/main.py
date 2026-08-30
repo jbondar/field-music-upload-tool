@@ -11,7 +11,7 @@ import asyncio
 import html
 import json
 import logging
-import shutil
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -310,6 +310,15 @@ async def upload_file(session_id: str, request: Request) -> Response:
     if not filename:
         return _json_error("Missing file name.")
 
+    if request.query_params.get("kind") == "cover":
+        # Artwork, not a track: it must never be numbered, tagged or counted
+        # towards the track list, so it takes a different path entirely.
+        body = b"".join([chunk async for chunk in request.stream()])
+        cover = await to_thread.run_sync(
+            store.store_cover, session_id, filename, iter([body])
+        )
+        return JSONResponse({"ok": True, "cover": cover})
+
     entry = await store.store_stream_async(session_id, filename, request.stream())
     return JSONResponse(
         {
@@ -422,9 +431,6 @@ async def _fetch_zip(
     The archive is spooled to disk first: reading zip entries needs to seek,
     which a stream cannot do.
     """
-    import tempfile
-    import zipfile
-
     await to_thread.run_sync(
         lambda: store.set_fetch(
             session_id, message=f"Downloading the archive from {source.label}…"
@@ -432,53 +438,163 @@ async def _fetch_zip(
     )
 
     budget = config.max_show_bytes
-    spool = Path(tempfile.mkdtemp(prefix="fetch-", dir=str(config.staging_dir)))
-    archive_path = spool / "download.zip"
+    archive_path = await to_thread.run_sync(store.archive_path, session_id)
     seen = 0
+    handle = await to_thread.run_sync(archive_path.open, "wb")
     try:
-        handle = await to_thread.run_sync(archive_path.open, "wb")
-        try:
-            async for chunk in stream:
-                seen += len(chunk)
-                if seen > budget:
-                    raise importer.ImportError_(
-                        "That download is larger than a single show is allowed."
-                    )
-                await to_thread.run_sync(handle.write, chunk)
-                await to_thread.run_sync(
-                    lambda: store.set_fetch(session_id, bytes=seen, total=total)
+        async for chunk in stream:
+            seen += len(chunk)
+            if seen > budget:
+                raise importer.ImportError_(
+                    "That download is larger than a single show is allowed."
                 )
-        finally:
-            await to_thread.run_sync(handle.close)
-
-        def extract() -> int:
-            with zipfile.ZipFile(archive_path) as archive:
-                members = importer.audio_members(
-                    archive,
-                    max_files=config.max_files_per_show,
-                    max_total_bytes=config.max_show_bytes,
-                )
-                for index, info in enumerate(members, start=1):
-                    name = Path(info.filename.replace("\\", "/")).name
-                    store.store_stream(
-                        session_id, name, importer.member_chunks(archive, info)
-                    )
-                    store.set_fetch(
-                        session_id, files=index,
-                        message=f"Unpacking {index} of {len(members)}…",
-                    )
-                return len(members)
-
-        count = await to_thread.run_sync(extract)
+            await to_thread.run_sync(handle.write, chunk)
+            await to_thread.run_sync(
+                lambda: store.set_fetch(session_id, bytes=seen, total=total)
+            )
     finally:
-        await to_thread.run_sync(lambda: shutil.rmtree(spool, ignore_errors=True))
+        await to_thread.run_sync(handle.close)
 
+    def inspect() -> list[importer.Group]:
+        with zipfile.ZipFile(archive_path) as archive:
+            return importer.show_groups(archive)
+
+    groups = await to_thread.run_sync(inspect)
+    if not groups:
+        raise importer.ImportError_(
+            "That archive has no audio files in it. Supported: "
+            + ", ".join(sorted(naming.AUDIO_EXTENSIONS))
+        )
+
+    if len(groups) > 1:
+        # Two nights of a run, or the same night from two tapers. Merging them
+        # into one folder would be silently wrong, so the uploader picks.
+        await to_thread.run_sync(
+            lambda: store.set_fetch(
+                session_id,
+                status="choose",
+                message=f"That folder holds {len(groups)} shows. Pick one.",
+                options=[
+                    {
+                        "key": g.key,
+                        "label": g.label,
+                        "files": len(g.members),
+                        "bytes": g.total_bytes,
+                        "suggested": naming.parse_show_name(g.key),
+                    }
+                    for g in groups
+                ],
+            )
+        )
+        return
+
+    await to_thread.run_sync(_extract_group, session_id, groups[0].key)
     await to_thread.run_sync(
         lambda: store.set_fetch(
-            session_id, status="done", files=count,
-            message=f"Fetched {count} tracks from {source.label}.",
+            session_id, status="done", files=len(groups[0].members),
+            message=f"Fetched {len(groups[0].members)} tracks from {source.label}.",
         )
     )
+
+
+def _extract_group(session_id: str, key: str) -> int:
+    """Unpack one show out of a downloaded archive, then drop the archive."""
+    archive_path = store.archive_path(session_id)
+    with zipfile.ZipFile(archive_path) as archive:
+        groups = {g.key: g for g in importer.show_groups(archive)}
+        group = groups.get(key)
+        if group is None:
+            raise importer.ImportError_("That show is not in the archive any more.")
+        members = importer.check_group(
+            group,
+            max_files=config.max_files_per_show,
+            max_total_bytes=config.max_show_bytes,
+        )
+        for index, info in enumerate(members, start=1):
+            name = Path(info.filename.replace("\\", "/")).name
+            store.store_stream(session_id, name, importer.member_chunks(archive, info))
+            store.set_fetch(
+                session_id, files=index,
+                message=f"Unpacking {index} of {len(members)}…",
+            )
+
+        # Shows shared as a folder often carry the gig poster. Keep it -- but
+        # never at the cost of the audio, so a bad image is logged and dropped
+        # rather than failing the import.
+        if group.cover is not None:
+            try:
+                store.store_cover(
+                    session_id,
+                    Path(group.cover.filename.replace("\\", "/")).name,
+                    importer.member_chunks(archive, group.cover),
+                )
+            except (UploadError, OSError) as exc:
+                log.warning("could not keep cover art: %s", exc)
+
+    archive_path.unlink(missing_ok=True)
+    return len(members)
+
+
+@app.post("/api/session/{session_id}/fetch/choose")
+async def fetch_choose(session_id: str, request: Request) -> Response:
+    """Unpack the show the uploader picked out of a multi-show archive."""
+    _require_uploader(request)
+    payload = await request.json()
+    key = str(payload.get("key", ""))
+
+    manifest = await to_thread.run_sync(store.load, session_id)
+    if manifest.fetch.get("status") != "choose":
+        return _json_error("There is nothing waiting to be picked.")
+
+    try:
+        count = await to_thread.run_sync(_extract_group, session_id, key)
+    except importer.ImportError_ as exc:
+        return _json_error(str(exc))
+    except UploadError as exc:
+        return _json_error(str(exc))
+
+    fetch = await to_thread.run_sync(
+        lambda: store.set_fetch(
+            session_id, status="done", files=count, options=[],
+            message=f"Unpacked {count} tracks from “{key}”." if key
+                    else f"Unpacked {count} tracks.",
+        )
+    )
+    return JSONResponse({"ok": True, "files": count, "fetch": fetch})
+
+
+@app.post("/api/inspect-link")
+async def inspect_link(request: Request) -> Response:
+    """Guess the show's details from a share link, without downloading it.
+
+    Every one of these hosts puts the folder or file name in the response
+    headers, so the form can be filled in for the price of one request -- a
+    1 GB show costs nothing to look at.
+    """
+    _require_uploader(request)
+    payload = await request.json()
+    url = str(payload.get("url", "")).strip()
+
+    try:
+        source = importer.normalize(url)
+        response, client, filename = await importer.Fetcher(timeout=20.0).open(source)
+    except importer.ImportError_ as exc:
+        return _json_error(str(exc))
+
+    try:
+        size = int(response.headers.get("content-length") or 0)
+    finally:
+        # Only the headers were wanted; do not pull the body.
+        await response.aclose()
+        await client.aclose()
+
+    return JSONResponse({
+        "ok": True,
+        "label": source.label,
+        "filename": filename,
+        "size": size,
+        "suggested": naming.parse_show_name(filename),
+    })
 
 
 @app.post("/api/session/{session_id}/fetch")
@@ -536,6 +652,7 @@ async def session_status(session_id: str, request: Request) -> Response:
             "errors": manifest.errors,
             "files": manifest.files,
             "fetch": manifest.fetch,
+            "cover": manifest.cover,
         }
     )
 

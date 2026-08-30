@@ -48,6 +48,33 @@ app/
 tests/          pytest, including a full receive-to-filed run
 ```
 
+## Filling the form in from the link
+
+Every one of these hosts puts the folder name in the response headers, so
+`POST /api/inspect-link` reads it without downloading a byte and guesses the
+show. The three conventions in the library are all understood:
+
+```
+Billy Strings - 12_15_23 Mohegan Sun Arena, Wilkes-Barre, PA
+2025-12-17 - Live at Rockefeller Chapel     ("at" a venue, "in" a city)
+2019-12-30 San Francisco, CA
+```
+
+Guesses only ever fill a blank field, never overwrite something typed, and are
+tinted so they read as provisional. A name that says nothing guesses nothing:
+half a guess has to be corrected, and a wrong value that looks filled in is
+easy to miss.
+
+## Archives holding more than one show
+
+A shared folder often holds several -- two nights of a run, or the same night
+from two different tapers. Merging them into one folder would silently invent
+a show that never happened, so the import stops and asks which one. Each
+option shows its track count, size, and what it would fill the form in with.
+
+The downloaded archive waits in the session until the choice is made, then is
+deleted; only the chosen show's audio is kept.
+
 ## Fetching from a share link
 
 Instead of uploading, a taper can paste a Dropbox, Box or Google Drive link

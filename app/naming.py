@@ -26,6 +26,24 @@ _WS_RE = re.compile(r"\s+")
 
 AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a", ".wav", ".aiff", ".aif", ".ogg", ".opus", ".alac"}
 
+# A show often travels with its poster. Plex and Lidarr look for cover.jpg
+# beside the tracks, which is also what most folders in this library already
+# use, so that is where one gets written.
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+COVER_STEM = "cover"
+MAX_COVER_BYTES = 20 * 1024 * 1024
+
+
+def cover_name(original: str) -> str:
+    """cover.jpg, keeping the real extension so nothing has to transcode."""
+    suffix = Path(original).suffix.lower()
+    if suffix == ".jpeg":
+        suffix = ".jpg"
+    if suffix not in IMAGE_EXTENSIONS:
+        suffix = ".jpg"
+    return COVER_STEM + suffix
+
+
 # Windows reserves these as device names at any extension. CIFS inherits it.
 _RESERVED = {
     "con", "prn", "aux", "nul",
@@ -143,6 +161,25 @@ _TRACK_RE = re.compile(
     re.VERBOSE,
 )
 
+# "01 Sandbag" -- a bare space after exactly two zero-padded digits. This is
+# how official and nugs-sourced releases name tracks, so refusing it meant
+# every real download arrived unnumbered.
+#
+# Two digits specifically, because the padding is what makes it positional:
+# "100 Horses" is a song, not track 100, and "1979" is a song too.
+_PADDED_TRACK_RE = re.compile(
+    r"""^\s*
+    (?P<num>0\d|[1-9]\d)\s+          # exactly two digits, then a space
+    (?P<title>\D.*)$                  # a title that does not just continue the number
+    """,
+    re.VERBOSE,
+)
+
+# A trailing "(Live at Rockefeller Chapel)" repeats what the folder already
+# says and is not in any track name in this library, so it is dropped. Only a
+# trailing one, and only if it opens with "Live": "(Encore)" is kept.
+_LIVE_SUFFIX_RE = re.compile(r"\s*\(\s*live\b[^()]*\)\s*$", re.I)
+
 
 def parse_track_hint(filename: str) -> tuple[int | None, str]:
     """Best-effort `(track_no, title)` from an uploaded filename.
@@ -154,7 +191,8 @@ def parse_track_hint(filename: str) -> tuple[int | None, str]:
     """
     stem = Path(filename).stem.strip()
 
-    for pattern in (_DISC_TRACK_RE, _TRACK_RE):
+    # Most specific first; the padded form is the loosest and goes last.
+    for pattern in (_DISC_TRACK_RE, _TRACK_RE, _PADDED_TRACK_RE):
         match = pattern.match(stem)
         if not match:
             continue
@@ -169,6 +207,7 @@ def parse_track_hint(filename: str) -> tuple[int | None, str]:
 def _tidy_title(raw: str) -> str:
     """Underscores to spaces, collapse runs, trim separators but keep dots."""
     text = _WS_RE.sub(" ", raw.replace("_", " ")).strip()
+    text = _LIVE_SUFFIX_RE.sub("", text).strip()
     return text.strip(" -")
 
 
@@ -207,3 +246,147 @@ def resolve_artist_dir(music_dir: Path, artist: str) -> tuple[Path, bool]:
             return path, True
 
     return music_dir / safe, False
+
+
+# --------------------------------------------------------------------------
+# Reading a show back out of a name
+#
+# A shared folder or zip is usually already named for the show, so the fields
+# on the form can often be filled in from it. Three shapes turn up in the
+# library, and all three are handled here:
+#
+#   Billy Strings - 12_15_23 Mohegan Sun Arena, Wilkes-Barre, PA
+#   2025-12-17 - Live at Rockefeller Chapel
+#   2019-12-30 San Francisco, CA
+#
+# Everything here is a guess offered to the uploader, never a decision: the
+# caller fills empty fields with it and leaves anything already typed alone.
+# --------------------------------------------------------------------------
+
+_ISO_DATE = re.compile(r"(?P<y>19\d{2}|20\d{2})[-._](?P<m>\d{1,2})[-._](?P<d>\d{1,2})")
+_US_DATE = re.compile(r"(?P<m>\d{1,2})[_/.-](?P<d>\d{1,2})[_/.-](?P<y>\d{2}(?:\d{2})?)(?!\d)")
+# "Live at The Fillmore", "Live in Durham", "Live on Later... with Jools"
+_LIVE_AT = re.compile(r"\blive\s+(?P<preposition>at|in|on|from)\s+(?P<place>.+)$", re.I)
+_STATE = re.compile(r"^[A-Z]{2,3}$")
+
+
+def _two_digit_year(raw: str) -> int:
+    value = int(raw)
+    if len(raw) == 4:
+        return value
+    # No show in this library predates 1970, and none is in the future.
+    return 2000 + value if value <= 69 else 1900 + value
+
+
+def _valid_date(year: int, month: int, day: int) -> dt.date | None:
+    try:
+        parsed = dt.date(year, month, day)
+    except ValueError:
+        return None
+    if parsed.year < 1900 or parsed > dt.date.today():
+        return None
+    return parsed
+
+
+def _split_place(rest: str) -> dict[str, str]:
+    """Split "Venue, City, ST" -- or the parts of it that are present."""
+    pieces = [p.strip() for p in rest.split(",") if p.strip()]
+    if not pieces:
+        return {}
+    out: dict[str, str] = {}
+    if len(pieces) >= 2 and _STATE.match(pieces[-1]):
+        out["state"] = pieces[-1]
+        pieces = pieces[:-1]
+    if len(pieces) >= 2:
+        out["city"] = pieces[-1]
+        out["venue"] = ", ".join(pieces[:-1])
+    elif pieces:
+        # One part left and a state alongside it reads as a city, not a venue:
+        # "2019-12-30 San Francisco, CA".
+        out["city" if "state" in out else "venue"] = pieces[0]
+    return out
+
+
+def parse_show_name(name: str) -> dict[str, str]:
+    """Guess a show's details from a folder, zip or archive name.
+
+    Returns only the fields it is reasonably sure of. An empty dict means the
+    name said nothing useful, which is a fine outcome.
+    """
+    name = (name or "").strip()
+    if not name:
+        return {}
+    if Path(name).suffix.lower() in {".zip", ".rar", ".7z", ".tar", ".gz"}:
+        name = Path(name).stem
+    name = name.strip().strip("-").strip()
+    if not name:
+        return {}
+
+    out: dict[str, str] = {}
+
+    # "Artist - MM_DD_YY Rest": the library's dominant shape.
+    head, sep, tail = name.partition(" - ")
+    if sep:
+        match = _US_DATE.match(tail.strip())
+        if match:
+            date = _valid_date(
+                _two_digit_year(match.group("y")),
+                int(match.group("m")),
+                int(match.group("d")),
+            )
+            if date:
+                out["artist"] = head.strip()
+                out["date"] = date.isoformat()
+                out.update(_split_place(tail[match.end():].strip()))
+                return out
+
+    # Anything with an ISO date in it. The date can be led by an artist
+    # ("Geese 2024-08-23 - Live in Detroit") or start the name outright.
+    match = _ISO_DATE.search(name)
+    if match:
+        date = _valid_date(int(match.group("y")), int(match.group("m")), int(match.group("d")))
+        if date:
+            out["date"] = date.isoformat()
+            before = name[: match.start()].strip().strip("-").strip()
+            if before:
+                out["artist"] = before
+            after = name[match.end():].strip().lstrip("-").strip()
+            if after:
+                out.update(_describe_place(after))
+            return out
+
+    return out
+
+
+def _describe_place(text: str) -> dict[str, str]:
+    """Turn the tail of a name into a venue or a city.
+
+    "Live at" names a venue and "Live in" names a city, which is a real
+    distinction worth keeping rather than dumping both into one field.
+    """
+    text = text.strip()
+    if not text:
+        return {}
+
+    # A trailing parenthetical is where the useful part often hides:
+    # "Love Takes Miles (Live on Later... with Jools Holland)".
+    inner = re.search(r"\(([^)]*\blive\b[^)]*)\)", text, re.I)
+    if inner:
+        text = inner.group(1).strip()
+
+    match = _LIVE_AT.search(text)
+    if match:
+        place = match.group("place").strip()
+        # Drop a trailing qualifier like "(Acoustic)" that is not part of the
+        # place name. This has to run before the stray-paren trim below, or
+        # the closing bracket is gone and the qualifier sticks.
+        place = re.sub(r"\s*\((?![^)]*\blive\b)[^)]*\)\s*$", "", place, flags=re.I).strip()
+        place = place.rstrip(")").strip()
+        if not place:
+            return {}
+        return {"city" if match.group("preposition").lower() == "in" else "venue": place}
+
+    if "," in text:
+        return _split_place(text)
+    # No "live at/in" and no comma: too ambiguous to be worth a wrong guess.
+    return {}

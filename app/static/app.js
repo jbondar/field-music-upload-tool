@@ -104,11 +104,22 @@
     return Math.max(1, Math.round(bytes / 1024)) + " KB";
   };
 
+  const IMAGE = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+
   function addFiles(fileList) {
     const rejected = [];
     for (const file of fileList) {
-      if (!AUDIO.has(extensionOf(file.name))) { rejected.push(file.name); continue; }
-      if (queue.some((q) => q.file.name === file.name && q.file.size === file.size)) continue;
+      const ext = extensionOf(file.name);
+      if (IMAGE.has(ext)) {
+        // A poster dropped in with the show is artwork, not a reject: keep
+        // the biggest one as cover.jpg beside the tracks.
+        if (!cover || !cover.file || file.size > cover.file.size) {
+          cover = { file, original: file.name };
+        }
+        continue;
+      }
+      if (!AUDIO.has(ext)) { rejected.push(file.name); continue; }
+      if (queue.some((q) => q.file && q.file.name === file.name && q.size === file.size)) continue;
       const hint = parseHint(file.name);
       queue.push({
         file, name: file.name, size: file.size,
@@ -119,9 +130,120 @@
     // order it was dropped -- which is the order the tracks get filled into.
     queue.sort((a, b) => (a.track || 9999) - (b.track || 9999));
     renderTracks();
+    renderCover();
+    suggestFromFolder(fileList);
     if (rejected.length) {
       alert(`Skipped ${rejected.length} file(s) that aren't audio:\n` + rejected.slice(0, 8).join("\n"));
     }
+  }
+
+  /* ------------------------------------------------- filling in the form */
+
+  const FIELDS = ["artist", "date", "venue", "city", "state"];
+
+  function applySuggestion(suggested) {
+    // Only ever fill a blank. What the uploader typed always wins -- a guess
+    // from a folder name must never quietly overwrite a correction.
+    const filled = [];
+    FIELDS.forEach((key) => {
+      const el = $(key);
+      if (!el || el.value.trim() || !suggested[key]) return;
+      el.value = suggested[key];
+      el.classList.add("guessed");
+      filled.push(key);
+    });
+    if (filled.length) updatePreview();
+    return filled;
+  }
+
+  function suggestFromFolder(fileList) {
+    // A dropped *folder* carries its name in webkitRelativePath; a plain
+    // multi-file selection does not, and there is nothing to read.
+    for (const file of fileList) {
+      const rel = file.webkitRelativePath || "";
+      const top = rel.split("/")[0];
+      if (top && top !== file.name) {
+        const filled = applySuggestion(parseShowName(top));
+        if (filled.length) {
+          linkStatus(`Filled ${filled.join(", ")} in from the folder name — check it.`);
+        }
+        return;
+      }
+    }
+  }
+
+  // Mirrors naming.parse_show_name on the server, for names we already have
+  // locally. The server stays the authority for anything fetched.
+  function parseShowName(raw) {
+    let name = (raw || "").trim().replace(/\.(zip|rar|7z|tar|gz)$/i, "").trim();
+    const out = {};
+
+    let m = name.match(/^(.+?) - (\d{1,2})[_/.-](\d{1,2})[_/.-](\d{2}(?:\d{2})?)(?!\d)\s*(.*)$/);
+    if (m) {
+      const year = m[4].length === 4 ? +m[4] : (+m[4] <= 69 ? 2000 + +m[4] : 1900 + +m[4]);
+      out.artist = m[1].trim();
+      out.date = iso(year, +m[2], +m[3]);
+      Object.assign(out, splitPlace(m[5]));
+      return out.date ? out : {};
+    }
+
+    m = name.match(/(19\d{2}|20\d{2})[-._](\d{1,2})[-._](\d{1,2})/);
+    if (m) {
+      out.date = iso(+m[1], +m[2], +m[3]);
+      if (!out.date) return {};
+      const before = name.slice(0, m.index).trim().replace(/^-|-$/g, "").trim();
+      if (before) out.artist = before;
+      const after = name.slice(m.index + m[0].length).trim().replace(/^-/, "").trim();
+      Object.assign(out, describePlace(after));
+    }
+    return out;
+  }
+
+  function iso(y, mo, d) {
+    const date = new Date(Date.UTC(y, mo - 1, d));
+    if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d) return "";
+    if (y < 1900 || date > new Date()) return "";
+    return date.toISOString().slice(0, 10);
+  }
+
+  function splitPlace(rest) {
+    const parts = (rest || "").split(",").map((p) => p.trim()).filter(Boolean);
+    const out = {};
+    if (!parts.length) return out;
+    if (parts.length >= 2 && /^[A-Z]{2,3}$/.test(parts[parts.length - 1])) {
+      out.state = parts.pop();
+    }
+    if (parts.length >= 2) {
+      out.city = parts.pop();
+      out.venue = parts.join(", ");
+    } else if (parts.length) {
+      out[out.state ? "city" : "venue"] = parts[0];
+    }
+    return out;
+  }
+
+  function describePlace(text) {
+    if (!text) return {};
+    const inner = text.match(/\(([^)]*\blive\b[^)]*)\)/i);
+    if (inner) text = inner[1].trim();
+    const m = text.match(/\blive\s+(at|in|on|from)\s+(.+)$/i);
+    if (m) {
+      let place = m[2].trim().replace(/\s*\((?![^)]*live)[^)]*\)\s*$/i, "").replace(/\)+$/, "").trim();
+      if (!place) return {};
+      return m[1].toLowerCase() === "in" ? { city: place } : { venue: place };
+    }
+    return text.includes(",") ? splitPlace(text) : {};
+  }
+
+  /* -------------------------------------------------------------- cover */
+
+  let cover = null;   // { file } picked locally, or { stored, original } fetched
+
+  function renderCover() {
+    const row = $("cover-row");
+    if (!cover) { row.hidden = true; return; }
+    row.hidden = false;
+    $("cover-name").textContent = cover.original || (cover.file && cover.file.name) || "";
   }
 
   function renderTracks() {
@@ -209,6 +331,16 @@
     return data;
   }
 
+  async function putCover(sessionId, file) {
+    const response = await fetch(
+      api(`/api/session/${sessionId}/file?kind=cover&name=${encodeURIComponent(file.name)}`),
+      { method: "PUT", body: file }
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    return data;
+  }
+
   function note(message, cls) {
     const li = document.createElement("li");
     li.className = cls || "";
@@ -220,6 +352,7 @@
 
   let fetchedSession = null;
   let pollTimer = null;
+  let peekedFor = null;
 
   function linkStatus(message, cls) {
     const el = $("link-status");
@@ -232,6 +365,34 @@
     const url = $("link-url").value.trim();
     if (!url) { linkStatus("Paste a link first.", "bad"); return; }
 
+    // First click on a new link only looks at its headers -- every one of
+    // these hosts names the folder there, so the form fills in for the price
+    // of one request and the uploader gets to check the guesses before a
+    // gigabyte starts moving. Clicking again downloads it.
+    if (peekedFor !== url) {
+      $("link-fetch").disabled = true;
+      linkStatus("Reading the link…");
+      try {
+        const peek = await postJSON("/api/inspect-link", { url });
+        if (!peek.ok) throw new Error(peek.error);
+        peekedFor = url;
+        const filled = applySuggestion(peek.suggested || {});
+        const size = peek.size ? ` · ${humanSize(peek.size)}` : "";
+        linkStatus(
+          `“${peek.filename}”${size}` +
+          (filled.length
+            ? ` — filled in ${filled.join(", ")}. Check them, then press Fetch again.`
+            : " — fill in the show details, then press Fetch again.")
+        );
+        $("link-fetch").textContent = "Fetch it";
+      } catch (err) {
+        linkStatus(err.message, "bad");
+      } finally {
+        $("link-fetch").disabled = false;
+      }
+      return;
+    }
+
     // The show details are needed before anything can be fetched: the server
     // files it into a session, and a session is a show.
     if (!$("show-form").reportValidity()) {
@@ -240,12 +401,13 @@
     }
 
     $("link-fetch").disabled = true;
+    $("link-choices").hidden = true;
+    $("link-choices").textContent = "";
     linkStatus("Starting…");
 
     try {
       if (!fetchedSession) {
-        const details = readDetails();
-        const session = await postJSON("/api/session", details);
+        const session = await postJSON("/api/session", readDetails());
         if (!session.ok) throw new Error(session.error || "Could not start the upload.");
         fetchedSession = session;
         if (session.targetExists) {
@@ -281,8 +443,19 @@
         return;
       }
 
+      if (f.status === "choose") {
+        renderChoices(f.options || []);
+        linkStatus(f.message || "Pick a show.", "");
+        $("link-fetch").disabled = false;
+        return;
+      }
+
       if (f.status === "done") {
         adoptFetched(data.files || []);
+        if (data.cover && data.cover.stored) {
+          cover = { stored: data.cover.stored, original: data.cover.original };
+          renderCover();
+        }
         linkStatus(f.message || "Fetched.", "ok");
         $("link-fetch").disabled = false;
         $("link-url").value = "";
@@ -298,6 +471,51 @@
       linkStatus(text);
       poll();
     }, 1500);
+  }
+
+  function renderChoices(options) {
+    const box = $("link-choices");
+    box.textContent = "";
+    box.hidden = options.length === 0;
+    options.forEach((option) => {
+      const row = document.createElement("div");
+      row.className = "link-choice";
+
+      const what = document.createElement("div");
+      what.className = "what";
+      const name = document.createElement("strong");
+      name.textContent = option.label;
+      const detail = document.createElement("span");
+      detail.className = "muted small";
+      detail.textContent = `${option.files} track${option.files === 1 ? "" : "s"}` +
+        (option.bytes ? ` · ${humanSize(option.bytes)}` : "");
+      what.append(name, detail);
+
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "btn";
+      pick.textContent = "Use this one";
+      pick.addEventListener("click", async () => {
+        box.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+        linkStatus(`Unpacking “${option.label}”…`);
+        try {
+          const done = await postJSON(
+            `/api/session/${fetchedSession.id}/fetch/choose`, { key: option.key });
+          if (!done.ok) throw new Error(done.error);
+          // The folder name is a better guess than the archive name was.
+          applySuggestion(option.suggested || {});
+          box.hidden = true;
+          box.textContent = "";
+          poll();
+        } catch (err) {
+          linkStatus(err.message, "bad");
+          box.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+        }
+      });
+
+      row.append(what, pick);
+      box.appendChild(row);
+    });
   }
 
   function adoptFetched(files) {
@@ -390,6 +608,16 @@
       return;
     }
 
+    if (cover && cover.file) {
+      try {
+        await putCover(session.id, cover.file);
+        note(`${cover.file.name} kept as the cover`, "ok");
+      } catch (err) {
+        // Artwork is not worth failing a show over.
+        note(`Could not keep ${cover.file.name} as the cover: ${err.message}`, "bad");
+      }
+    }
+
     $("progress-title").textContent = "Checking and tagging…";
     $("progress-detail").textContent = "Verifying every file decodes, writing tags, filing the show.";
 
@@ -402,7 +630,9 @@
         note("This show is now in the library. Thanks!", "ok");
         queue = [];
         fetchedSession = null;
+        cover = null;
         renderTracks();
+        renderCover();
       } else {
         $("progress-title").textContent = "Held for review";
         $("progress-detail").textContent =
@@ -526,6 +756,9 @@
     $("show-form").addEventListener("submit", submit);
 
     $("link-fetch").addEventListener("click", fetchFromLink);
+    $("link-url").addEventListener("input", () => {
+      if ($("link-url").value.trim() !== peekedFor) $("link-fetch").textContent = "Fetch";
+    });
     $("link-url").addEventListener("keydown", (e) => {
       // Enter in the link box must not submit the show form behind it.
       if (e.key === "Enter") { e.preventDefault(); fetchFromLink(); }

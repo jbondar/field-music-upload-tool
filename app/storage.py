@@ -112,6 +112,10 @@ class Manifest:
     # Progress of a share-link import, polled by the page while it runs:
     # {"status", "label", "message", "bytes", "total", "files"}.
     fetch: dict[str, Any] = field(default_factory=dict)
+    # The show's poster, if one came with it: {"stored", "original", "size"}.
+    # Not a TrackEntry -- it is artwork, not a track, and must never be
+    # numbered, tagged or counted towards the track list.
+    cover: dict[str, Any] = field(default_factory=dict)
 
     @property
     def details(self) -> ShowDetails:
@@ -350,6 +354,43 @@ class Store:
             self._finish_store, session_id, filename, stored, written
         )
 
+    def archive_path(self, session_id: str) -> Path:
+        """Where a fetched archive waits while the uploader picks a show."""
+        return self._dir(session_id) / "archive.zip"
+
+    def store_cover(
+        self, session_id: str, filename: str, chunks: Iterator[bytes]
+    ) -> dict[str, Any]:
+        """Save the show's artwork. Replaces any previous one."""
+        stored = naming.cover_name(filename)
+        destination = self._dir(session_id) / "files" / stored
+        written = 0
+        try:
+            with destination.open("wb") as handle:
+                for chunk in chunks:
+                    written += len(chunk)
+                    if written > naming.MAX_COVER_BYTES:
+                        raise UploadError("That image is too large to use as cover art.")
+                    handle.write(chunk)
+        except UploadError:
+            destination.unlink(missing_ok=True)
+            raise
+        except OSError as exc:
+            destination.unlink(missing_ok=True)
+            raise UploadError("Could not save the cover image.") from exc
+
+        if written == 0:
+            destination.unlink(missing_ok=True)
+            raise UploadError("That image is empty.")
+
+        with self._lock(session_id):
+            manifest = self.load(session_id)
+            manifest.cover = {
+                "stored": stored, "original": filename, "size": written
+            }
+            self._write_manifest(manifest)
+            return manifest.cover
+
     def set_fetch(self, session_id: str, **fields: Any) -> dict[str, Any]:
         """Merge progress into the manifest's fetch record.
 
@@ -460,6 +501,16 @@ class Store:
                     entry.status = "error"
                     entry.error = str(exc)
                     errors.append(f"{entry.original}: {exc}")
+
+            # The poster, if the show came with one. A failure here is not a
+            # reason to hold the whole show: the music is the point, and a
+            # missing cover.jpg is a cosmetic loss Plex will shrug at.
+            if manifest.cover:
+                cover_source = root / "files" / manifest.cover["stored"]
+                try:
+                    shutil.copy2(cover_source, show_dir / manifest.cover["stored"])
+                except OSError as exc:
+                    log.warning("could not file cover art for %s: %s", manifest.id, exc)
 
             manifest.files = [asdict(e) for e in entries]
 
