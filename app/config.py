@@ -118,6 +118,14 @@ class Config:
     # everything waits in staging for a manual promote.
     auto_promote: bool = field(default_factory=lambda: _env_bool("AUTO_PROMOTE", True))
 
+    # --- grants event log (optional, same story as Plex above) -------------
+    # Reports each filed show to grants' event log, so it shows up on its
+    # admin page tied to the uploader's account. Without a token the app just
+    # does not report; a grants that is down never turns a good upload into
+    # a failed one.
+    grants_url: str = field(default_factory=lambda: _env("GRANTS_URL").rstrip("/"))
+    grants_event_token: str = field(default_factory=lambda: _env("GRANTS_EVENT_TOKEN"))
+
     def url_for(self, path: str) -> str:
         """Prefix an app-relative path with BASE_PATH."""
         if not path.startswith("/"):

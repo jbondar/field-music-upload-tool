@@ -8,6 +8,7 @@ browser will see -- links, form actions, cookie paths, the OAuth redirect.
 from __future__ import annotations
 
 import asyncio
+import functools
 import html
 import json
 import logging
@@ -25,6 +26,8 @@ from fastapi.responses import (
     Response,
 )
 from fastapi.staticfiles import StaticFiles
+
+from grants_events import GrantsEventClient
 
 from . import auth, importer, metadata, naming, plex as plex_api, storage
 from .config import config
@@ -55,6 +58,9 @@ store = storage.Store(
     max_show_bytes=config.max_show_bytes,
     max_files=config.max_files_per_show,
     auto_promote=config.auto_promote,
+)
+grants_events = GrantsEventClient(
+    config.grants_url, config.grants_event_token, "upload"
 )
 
 
@@ -677,6 +683,8 @@ async def finalize(session_id: str, request: Request) -> Response:
         # safely in the library. The page polls the session for the link.
         await to_thread.run_sync(store.set_plex, session_id, {"status": "scanning"})
         asyncio.create_task(_publish_to_plex(session_id, Path(manifest.target_path)))
+    if promoted:
+        asyncio.create_task(_report_upload(manifest))
 
     return JSONResponse(
         {
@@ -689,6 +697,33 @@ async def finalize(session_id: str, request: Request) -> Response:
             "plexPending": promoted and plex.configured,
         }
     )
+
+
+async def _report_upload(manifest: storage.Manifest) -> None:
+    """Tell grants a show was filed, for its admin-visible upload log.
+
+    Best effort, same reasoning as _publish_to_plex: the show is already
+    safely in the library by the time this runs, so grants being down or
+    slow must never turn a successful upload into a failure. GrantsEventClient
+    itself never raises -- this wrapper exists only to keep the pattern
+    identical to the Plex dispatch above.
+    """
+    payload = {
+        "show": Path(manifest.target_path).name if manifest.target_path else "",
+        "file_count": len(manifest.files),
+        "total_bytes": manifest.total_bytes,
+        "promoted_at": manifest.promoted_at,
+    }
+    # to_thread.run_sync only forwards positional args, so report()'s
+    # keyword-only signature has to go through a partial rather than kwargs
+    # on this call itself.
+    call = functools.partial(
+        grants_events.report,
+        email=manifest.uploader_email,
+        event_type="upload",
+        payload=payload,
+    )
+    await to_thread.run_sync(call)
 
 
 async def _publish_to_plex(session_id: str, folder: Path) -> None:
