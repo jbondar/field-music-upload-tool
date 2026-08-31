@@ -59,6 +59,10 @@ main { max-width: 54rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
 h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em;
      color: var(--muted); margin: 1.5rem 0 0.75rem; }
 h2:first-child { margin-top: 0; }
+/* One of these per uploader, above their own table -- a step below h2 so
+   the grouping reads as "within Recent uploads," not a new section. */
+h3 { font-size: 0.9rem; font-weight: 600; margin: 1.1rem 0 0.4rem; }
+h3:first-child { margin-top: 0; }
 
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem 1rem; }
 .field { margin: 0; display: flex; flex-direction: column; gap: 0.3rem; }

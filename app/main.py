@@ -791,6 +791,24 @@ def _require_admin(request: Request) -> auth.User:
     return user
 
 
+def _upload_summary(m: storage.Manifest) -> dict[str, Any]:
+    """The fields both the admin's flat list and a single uploader's own
+    history need. Shared so the two views can't quietly drift apart."""
+    return {
+        "id": m.id,
+        "createdAt": m.created_at,
+        "uploader": m.uploader_email,
+        "status": m.status,
+        "folder": Path(m.target_path).name if m.target_path else "",
+        "files": len(m.files),
+        "bytes": m.total_bytes,
+        "errors": m.errors,
+        # {} before a promoted show's Plex publish has even started; frontends
+        # treat every unrecognised/absent status the same as "no link yet".
+        "plex": m.plex,
+    }
+
+
 @app.get("/api/admin/state")
 async def admin_state(request: Request) -> Response:
     _require_admin(request)
@@ -819,21 +837,38 @@ async def admin_state(request: Request) -> Response:
             "duplicateArtists": await to_thread.run_sync(
                 naming.duplicate_artist_folders, config.music_dir
             ),
-            "uploads": [
-                {
-                    "id": m.id,
-                    "createdAt": m.created_at,
-                    "uploader": m.uploader_email,
-                    "status": m.status,
-                    "folder": Path(m.target_path).name if m.target_path else "",
-                    "files": len(m.files),
-                    "bytes": m.total_bytes,
-                    "errors": m.errors,
-                }
-                for m in uploads[:50]
-            ],
+            "uploads": [_upload_summary(m) for m in uploads[:50]],
         }
     )
+
+
+@app.get("/api/uploads/mine")
+async def uploads_mine(request: Request) -> Response:
+    """Every uploader's own history, not just what happened to still be in
+    their current browser tab -- there was previously no way to see a show
+    you filed last week without asking Jake to look in the admin page."""
+    user = _require_uploader(request)
+    sessions = await to_thread.run_sync(store.list_sessions)
+    mine = [m for m in sessions if m.uploader_email.lower() == user.email.lower()]
+    return JSONResponse({"ok": True, "uploads": [_upload_summary(m) for m in mine]})
+
+
+@app.post("/api/admin/retry-plex/{session_id}")
+async def admin_retry_plex(session_id: str, request: Request) -> Response:
+    """Re-run the Plex publish for one already-filed show.
+
+    For when Plex itself was down or slow at the moment a show was promoted
+    -- the show is safely on disk either way, this only ever re-attempts
+    generating the link, it never re-touches the files."""
+    _require_admin(request)
+    manifest = await to_thread.run_sync(store.load, session_id)
+    if manifest.status != storage.STATUS_PROMOTED:
+        return _json_error("That show has not been filed yet.")
+    if not manifest.target_path:
+        return _json_error("That show has no filed location to scan.")
+    record = await to_thread.run_sync(plex.publish, Path(manifest.target_path))
+    await to_thread.run_sync(store.set_plex, session_id, record)
+    return JSONResponse({"ok": True, "plex": record})
 
 
 @app.post("/api/admin/invite")

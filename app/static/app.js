@@ -43,6 +43,10 @@
         loadAdmin();
       }
     }
+    if (allowed) {
+      $("mine-card").hidden = false;
+      loadMine();
+    }
     $("limits").textContent =
       `${state.extensions.join(", ")} · up to ${state.maxFileMb} MB per file, ` +
       `${state.maxFiles} files, ${(state.maxShowMb / 1024).toFixed(0)} GB per show`;
@@ -867,6 +871,54 @@
     });
   }
 
+  // A show's Plex column: a real link once indexed, a plain status while
+  // Plex is still catching up or unreachable, and a retry button an admin
+  // can use to re-attempt the link without touching the filed show itself.
+  // `retry` is the callback to run on click, or omitted for the read-only
+  // "your uploads" view -- only an admin endpoint exists to retry.
+  function plexCell(u, retry) {
+    const plex = u.plex || {};
+    if (plex.status === "indexed" && plex.url) {
+      const a = document.createElement("a");
+      a.href = plex.url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = "Open in Plex";
+      return a;
+    }
+    if (!plex.status || plex.status === "off") {
+      const span = document.createElement("span");
+      span.className = "muted";
+      span.textContent = u.status === "promoted" ? "not scanned" : "—";
+      return span;
+    }
+    const wrap = document.createElement("span");
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = plex.status; // "error" or "scanning"
+    tag.title = plex.message || "";
+    wrap.appendChild(tag);
+    if (retry) {
+      wrap.appendChild(document.createTextNode(" "));
+      wrap.appendChild(actionButton("retry", retry));
+    }
+    return wrap;
+  }
+
+  async function loadMine() {
+    let data;
+    try { data = await postJSON("/api/uploads/mine", undefined, "GET"); } catch (_) { return; }
+    if (!data.ok) return;
+    fillTable($("mine"), ["When", "Show", "Files", "Status", "Plex"],
+      data.uploads.map((u) => [
+        u.createdAt.replace("T", " ").replace("+00:00", ""),
+        u.folder || "—",
+        String(u.files),
+        u.status,
+        plexCell(u),
+      ]));
+  }
+
   function actionButton(label, handler) {
     const button = document.createElement("button");
     button.type = "button";
@@ -914,19 +966,62 @@
         dupes.map((group) => [group.join("  ·  ")]));
     }
 
-    fillTable($("uploads"), ["When", "Who", "Show", "Files", "Status", ""],
-      data.uploads.map((u) => {
-        const retry = u.status === "promoted" ? "" : actionButton("retry", async () => {
-          await postJSON(`/api/admin/promote/${u.id}`, {});
-          loadAdmin();
-        });
-        const status = document.createElement("span");
-        status.className = "tag";
-        status.textContent = u.status;
-        status.title = (u.errors || []).join("\n");
-        return [u.createdAt.replace("T", " ").replace("+00:00", ""),
-                u.uploader, u.folder || "—", String(u.files), status, retry];
-      }));
+    renderUploadsByUploader(data.uploads);
+  }
+
+  // One table per uploader rather than one long flat list -- "what has
+  // this specific person filed" is the question this gets asked most, and
+  // scrolling past everyone else to answer it was the whole complaint.
+  function renderUploadsByUploader(uploads) {
+    const container = $("uploads-groups");
+    container.textContent = "";
+    if (!uploads.length) {
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.textContent = "Nothing yet.";
+      container.appendChild(p);
+      return;
+    }
+    const byUploader = new Map();
+    uploads.forEach((u) => {
+      const key = u.uploader || "(unknown)";
+      if (!byUploader.has(key)) byUploader.set(key, []);
+      byUploader.get(key).push(u);
+    });
+    // Most shows first, so a frequent uploader isn't buried below a
+    // one-time guest just because of alphabetical order.
+    const uploaders = [...byUploader.keys()].sort(
+      (a, b) => byUploader.get(b).length - byUploader.get(a).length
+    );
+    uploaders.forEach((email) => {
+      const heading = document.createElement("h3");
+      heading.textContent = `${email} (${byUploader.get(email).length})`;
+      container.appendChild(heading);
+
+      const table = document.createElement("table");
+      table.className = "admin-table";
+      container.appendChild(table);
+
+      fillTable(table, ["When", "Show", "Files", "Status", "Plex", ""],
+        byUploader.get(email).map((u) => {
+          const promote = u.status === "promoted" ? "" : actionButton("retry", async () => {
+            await postJSON(`/api/admin/promote/${u.id}`, {});
+            loadAdmin();
+          });
+          const status = document.createElement("span");
+          status.className = "tag";
+          status.textContent = u.status;
+          status.title = (u.errors || []).join("\n");
+          const plex = plexCell(u, u.status === "promoted" && u.plex?.status !== "indexed"
+            ? async () => {
+                await postJSON(`/api/admin/retry-plex/${u.id}`, {});
+                loadAdmin();
+              }
+            : null);
+          return [u.createdAt.replace("T", " ").replace("+00:00", ""),
+                  u.folder || "—", String(u.files), status, plex, promote];
+        }));
+    });
   }
 
   /* ---------------------------------------------------------------- wire */
