@@ -3,8 +3,13 @@ uvicorn[standard]==0.34.0
 httpx==0.28.1
 itsdangerous==2.2.0
 python-multipart==0.0.20
-# TEMPORARY: pinned to the branch, not the grants-events-v1 tag, because
-# that tag does not exist until jbondar/web-services#14 merges. Switch this
-# back to the tag once it does -- tracking a branch defeats the whole point
-# of pinning (see libs/grants_events/README.md).
-git+https://github.com/jbondar/web-services.git@grants-events#subdirectory=libs/grants_events
+# TEMPORARILY DISABLED: web-services is a private repo, and `pip install
+# git+https://...` against it has no credentials inside a plain Docker
+# build -- this line currently fails the build outright rather than
+# reporting uploads. app/main.py imports grants_events defensively (falls
+# back to None) specifically so the app still works with this line absent.
+# To re-enable: give the build either an SSH-agent-forwarded key (BuildKit
+# `--ssh default` + `RUN --mount=type=ssh`) or a read-only PAT passed as a
+# build secret (same shape as recipes' RECIPES_NOTES_TOKEN), then switch
+# this back to the pinned grants-events-v1 tag, not a tracked branch.
+# git+https://github.com/jbondar/web-services.git@grants-events-v1#subdirectory=libs/grants_events

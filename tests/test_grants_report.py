@@ -23,7 +23,14 @@ def main(monkeypatch, tmp_path):
     monkeypatch.setenv("TRUSTED_EMAIL_HEADER", "x-auth-request-email")
     for mod in [m for m in sys.modules if m.startswith("app.")]:
         del sys.modules[mod]
-    return importlib.import_module("app.main")
+    module = importlib.import_module("app.main")
+    if module.grants_events is None:
+        # grants_events is currently an optional dependency (see
+        # requirements.txt) -- these tests exercise its wiring, so they
+        # have nothing to test without it installed, rather than something
+        # broken in this app.
+        pytest.skip("grants_events package is not installed")
+    return module
 
 
 def _manifest(main, **overrides):

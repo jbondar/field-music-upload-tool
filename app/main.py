@@ -27,7 +27,16 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from grants_events import GrantsEventClient
+try:
+    # web-services is a private repo, and `pip install git+https://...`
+    # against it needs credentials the Docker build does not currently have
+    # -- see requirements.txt's note. Until that's resolved, a build without
+    # this package installed must still start and serve uploads; it just
+    # will not report them to grants. Same "optional, degrades quietly"
+    # shape as Plex and proxy-auth above.
+    from grants_events import GrantsEventClient
+except ImportError:
+    GrantsEventClient = None
 
 from . import auth, importer, metadata, naming, plex as plex_api, storage
 from .config import config
@@ -59,8 +68,10 @@ store = storage.Store(
     max_files=config.max_files_per_show,
     auto_promote=config.auto_promote,
 )
-grants_events = GrantsEventClient(
-    config.grants_url, config.grants_event_token, "upload"
+grants_events = (
+    GrantsEventClient(config.grants_url, config.grants_event_token, "upload")
+    if GrantsEventClient is not None
+    else None
 )
 
 
@@ -683,7 +694,7 @@ async def finalize(session_id: str, request: Request) -> Response:
         # safely in the library. The page polls the session for the link.
         await to_thread.run_sync(store.set_plex, session_id, {"status": "scanning"})
         asyncio.create_task(_publish_to_plex(session_id, Path(manifest.target_path)))
-    if promoted:
+    if promoted and grants_events is not None:
         asyncio.create_task(_report_upload(manifest))
 
     return JSONResponse(
