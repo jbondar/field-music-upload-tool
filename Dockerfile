@@ -6,9 +6,13 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 # ffmpeg/ffprobe do the real work here: probing uploads, proving they decode,
-# and writing tags. Without them the service can receive files and nothing else.
+# and writing tags. Without them the service can receive files and nothing
+# else. git is here only so pip can resolve requirements.txt's
+# git+https://.../web-services...#subdirectory=libs/grants_events line --
+# pip shells out to a real `git clone` for a VCS requirement, it doesn't
+# speak the protocol itself.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

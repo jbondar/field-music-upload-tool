@@ -3,4 +3,8 @@ uvicorn[standard]==0.34.0
 httpx==0.28.1
 itsdangerous==2.2.0
 python-multipart==0.0.20
-git+https://github.com/jbondar/web-services.git@grants-events-v1#subdirectory=libs/grants_events
+# TEMPORARY: pinned to the branch, not the grants-events-v1 tag, because
+# that tag does not exist until jbondar/web-services#14 merges. Switch this
+# back to the tag once it does -- tracking a branch defeats the whole point
+# of pinning (see libs/grants_events/README.md).
+git+https://github.com/jbondar/web-services.git@grants-events#subdirectory=libs/grants_events
