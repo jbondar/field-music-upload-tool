@@ -18,6 +18,14 @@ SECTIONS = """<MediaContainer>
   <Directory key="3" type="movie" title="Movies"/>
   <Directory key="1" type="artist" title="Music"><Location path="/media/Music"/></Directory>
 </MediaContainer>"""
+# Real Plex answers /refresh with 200 and an empty body -- it triggers a
+# scan, it does not report one. Routes are matched by prefix (see `client`
+# below), and this has to be registered before the more general
+# "/library/sections" route or that one shadows it. Getting this wrong is
+# exactly how the empty-body ParseError bug shipped invisibly: the old mock
+# fell through to "/library/sections" and returned real XML for a refresh
+# call, which real Plex never does.
+REFRESH_OK = {"/library/sections/1/refresh": ""}
 
 
 def client(routes, **kwargs):
@@ -86,8 +94,8 @@ def test_a_server_with_no_music_library_says_so(plex):
 
 def test_only_the_new_folder_is_scanned(plex):
     """A full library scan of 310 shows to pick up one is rude."""
-    p = plex({"/library/sections": SECTIONS})
-    p.scan(Path("/music/Geese/Show"))
+    p = plex({**REFRESH_OK, "/library/sections": SECTIONS})
+    p.scan(Path("/music/Geese/Show"))  # must not raise on the empty response
     refresh = [c for c in p.calls if "refresh" in c.url.path][0]
     assert refresh.url.path == "/library/sections/1/refresh"
     assert refresh.url.params["path"] == "/media/Music/Geese/Show"
@@ -147,7 +155,8 @@ def test_a_plex_that_cannot_be_reached_does_not_fail_the_upload(plex):
 
 def test_a_slow_plex_reports_scanning_rather_than_failing(plex, monkeypatch):
     recent = "<MediaContainer/>"
-    p = plex({"/library/sections/1/recentlyAdded": recent, "/library/sections": SECTIONS})
+    p = plex({**REFRESH_OK, "/library/sections/1/recentlyAdded": recent,
+              "/library/sections": SECTIONS})
     monkeypatch.setattr("app.plex.POLL_TIMEOUT", 0.01)
     monkeypatch.setattr("app.plex.POLL_INTERVAL", 0.001)
     result = p.publish(Path("/music/Geese/Show"))
@@ -158,7 +167,8 @@ def test_a_found_show_comes_back_with_a_link(plex):
     recent = '<MediaContainer><Directory ratingKey="9" title="Show" parentTitle="Geese"/></MediaContainer>'
     children = """<MediaContainer><Track><Media><Part
       file="/media/Music/Geese/Show/01. Husbands.flac"/></Media></Track></MediaContainer>"""
-    p = plex({"/library/sections/1/recentlyAdded": recent,
+    p = plex({**REFRESH_OK,
+              "/library/sections/1/recentlyAdded": recent,
               "/library/sections": SECTIONS,
               "/library/metadata/9/children": children,
               "/identity": IDENTITY})
@@ -166,3 +176,22 @@ def test_a_found_show_comes_back_with_a_link(plex):
     assert result["status"] == "indexed"
     assert result["artist"] == "Geese"
     assert "app.plex.tv" in result["url"]
+
+
+def test_a_refresh_with_no_response_body_is_not_a_scan_failure(plex):
+    """The real bug this guards: Plex answers /refresh with 200 and an
+    empty body -- it triggers a scan, it does not report one. Parsing that
+    as XML used to raise, which aborted publish() before find_album() ever
+    ran, so an upload never got a link even though scanning and matching
+    both worked once actually attempted."""
+    recent = '<MediaContainer><Directory ratingKey="9" title="Show" parentTitle="Geese"/></MediaContainer>'
+    children = """<MediaContainer><Track><Media><Part
+      file="/media/Music/Geese/Show/01. Husbands.flac"/></Media></Track></MediaContainer>"""
+    p = plex({**REFRESH_OK,
+              "/library/sections/1/recentlyAdded": recent,
+              "/library/sections": SECTIONS,
+              "/library/metadata/9/children": children,
+              "/identity": IDENTITY})
+    p.scan(Path("/music/Geese/Show"))  # the call that used to raise ParseError
+    result = p.publish(Path("/music/Geese/Show"))
+    assert result["status"] == "indexed"

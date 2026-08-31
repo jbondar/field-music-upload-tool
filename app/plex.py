@@ -75,6 +75,17 @@ class Plex:
         with httpx.Client(timeout=self._timeout, headers=headers) as client:
             response = client.get(f"{self.base_url}{endpoint}", params=params)
             response.raise_for_status()
+            # An action endpoint -- /refresh chief among them -- answers 200
+            # with an empty body rather than a MediaContainer: it triggers a
+            # scan, it does not report one. ET.fromstring on b"" raises
+            # ParseError, which used to abort scan() (and so publish())
+            # before find_album() ever got a chance to run. An empty root
+            # element is indistinguishable from "found nothing" to every
+            # caller here (all of them .find/.findall/.get on the result),
+            # so this is a safe stand-in, not a special case each call site
+            # has to know about.
+            if not response.content:
+                return ET.Element("MediaContainer")
             return ET.fromstring(response.content)
 
     def as_plex_sees(self, path: Path) -> str:
