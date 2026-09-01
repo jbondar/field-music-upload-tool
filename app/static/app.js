@@ -62,7 +62,23 @@
     return (value || "").replace(ILLEGAL, "-").replace(/\s+/g, " ").trim().replace(/[. ]+$/, "");
   }
 
+  function currentMode() {
+    const picked = document.querySelector('input[name="mode"]:checked');
+    return picked ? picked.value : "show";
+  }
+
+  function discTotal() {
+    return Math.max(1, parseInt($("disc-total").value, 10) || 1);
+  }
+
+  // "2016" or "2016-09-30" -> a four-digit year, or "" if it says nothing.
+  function releaseYear() {
+    const m = ($("album-date").value || "").trim().match(/^\s*(\d{4})/);
+    return m ? m[1] : "";
+  }
+
   function folderName() {
+    if (currentMode() === "album") return albumFolderName();
     const artist = sanitize($("artist").value) || "Artist";
     const raw = $("date").value;
     if (!raw) return "";
@@ -71,6 +87,14 @@
     const tail = [sanitize($("venue").value), sanitize($("city").value),
                   sanitize($("state").value).toUpperCase()].filter(Boolean).join(", ");
     return `${artist} - ${stamp}${tail ? " " + tail : ""}`;
+  }
+
+  // Mirrors naming.album_folder_name: "<Album>" or "<Album> (YYYY)".
+  function albumFolderName() {
+    const album = sanitize($("album").value);
+    if (!album) return "";
+    const year = releaseYear();
+    return year ? `${album} (${year})` : album;
   }
 
   /* ------------------------------------------------------------ artists */
@@ -205,7 +229,9 @@
 
   function updatePreview() {
     const name = folderName();
-    const typed = $("artist").value.trim();
+    // In album mode the show is filed under the album artist when one is given.
+    const typed = (currentMode() === "album" && $("album-artist").value.trim())
+      || $("artist").value.trim();
     // Show the folder the show will really land in, not the one that was
     // typed -- those differ whenever an existing artist is spelled another way.
     const artist = typed ? resolveArtist(typed).resolved : "";
@@ -213,9 +239,192 @@
     $("preview-path").textContent = `Music/${artist}/${name}/`;
   }
 
+  /* ---------------------------------------------------- show vs. album */
+
+  // Fields that only make sense for one mode. Everything else (artist, genre)
+  // is shared and stays put.
+  const SHOW_FIELDS = ["field-date", "field-venue", "field-city", "field-state",
+                       "field-taper", "field-source"];
+  const ALBUM_FIELDS = ["field-album", "field-album-artist", "field-album-date",
+                        "field-label", "field-release-type", "field-disc-total"];
+
+  function applyMode() {
+    const album = currentMode() === "album";
+    SHOW_FIELDS.forEach((id) => { $(id).hidden = album; });
+    ALBUM_FIELDS.forEach((id) => { $(id).hidden = !album; });
+
+    // A hidden required field cannot be focused, so reportValidity() would
+    // wedge. Move the requirement to whichever field the mode actually shows.
+    $("date").required = !album;
+    $("album").required = album;
+
+    $("form-heading").textContent = album ? "The album" : "The show";
+    if (!album) { $("mb-results").hidden = true; }
+    if (!state.lookupEnabled) { $("mb-lookup").hidden = true; }
+
+    renderTracks();
+    renderArtistNote();
+    updatePreview();
+  }
+
+  /* ------------------------------------------------ metadata lookup */
+
+  let mbSelection = null;   // {release, releaseGroup, artistId} once one is picked
+
+  function mbStatus(message, cls) {
+    const el = $("mb-status");
+    el.hidden = !message;
+    el.textContent = message || "";
+    el.className = "muted small" + (cls ? " " + cls : "");
+  }
+
+  async function runLookup() {
+    const artist = ($("album-artist").value || $("artist").value).trim();
+    const album = $("album").value.trim();
+    if (!album) { $("mb-results").hidden = false; mbStatus("Type an album name first.", "bad"); return; }
+
+    $("mb-results").hidden = false;
+    $("mb-choices").textContent = "";
+    $("mb-lookup").disabled = true;
+    mbStatus("Searching MusicBrainz…");
+    try {
+      const data = await postJSON("/api/lookup", {
+        artist, album, tracks: queue.length || undefined,
+      });
+      if (!data.ok) throw new Error(data.error || "Lookup failed.");
+      renderLookup(data.releases || []);
+    } catch (err) {
+      mbStatus(err.message, "bad");
+    } finally {
+      $("mb-lookup").disabled = false;
+    }
+  }
+
+  function renderLookup(releases) {
+    const box = $("mb-choices");
+    box.textContent = "";
+    if (!releases.length) {
+      mbStatus("Nothing on MusicBrainz matched. Fill it in by hand.", "");
+      return;
+    }
+    mbStatus(`${releases.length} match${releases.length === 1 ? "" : "es"} — pick the right pressing.`);
+    releases.forEach((rel) => {
+      const row = document.createElement("div");
+      row.className = "link-choice";
+
+      const what = document.createElement("div");
+      what.className = "what";
+      const name = document.createElement("strong");
+      name.textContent = rel.title || "(untitled)";
+      const detail = document.createElement("span");
+      detail.className = "muted small";
+      detail.textContent = [
+        rel.artist,
+        rel.date || null,
+        rel.country || null,
+        rel.label || null,
+        rel.trackCount ? `${rel.trackCount} tracks` : null,
+        rel.discCount > 1 ? `${rel.discCount} discs` : null,
+        rel.primaryType || null,
+      ].filter(Boolean).join(" · ");
+      what.append(name, detail);
+
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "btn";
+      pick.textContent = "Use this";
+      pick.addEventListener("click", () => pickRelease(rel.id));
+
+      row.append(what, pick);
+      box.appendChild(row);
+    });
+  }
+
+  async function pickRelease(id) {
+    $("mb-choices").querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    mbStatus("Fetching the track list…");
+    let rel;
+    try {
+      const data = await postJSON(`/api/lookup/${encodeURIComponent(id)}`, undefined, "GET");
+      if (!data.ok) throw new Error(data.error || "Could not load that release.");
+      rel = data.release;
+    } catch (err) {
+      mbStatus(err.message, "bad");
+      $("mb-choices").querySelectorAll("button").forEach((b) => { b.disabled = false; });
+      return;
+    }
+
+    if (rel.title) $("album").value = rel.title;
+    if (rel.artist && !$("album-artist").value.trim()
+        && foldArtist(rel.artist) !== foldArtist($("artist").value)) {
+      $("album-artist").value = rel.artist;
+    }
+    if (rel.date && !$("album-date").value.trim()) $("album-date").value = rel.date;
+    if (rel.label && !$("label").value.trim()) $("label").value = rel.label;
+    if (rel.primaryType && !$("release-type").value.trim()) $("release-type").value = rel.primaryType;
+    if (rel.discCount) $("disc-total").value = rel.discCount;
+
+    mbSelection = {
+      release: rel.id || "",
+      releaseGroup: rel.releaseGroupId || "",
+      artistId: rel.artistId || "",
+    };
+
+    const applied = applyTrackList(rel.tracks || []);
+    await maybeFetchCover(rel.coverArtUrl);
+
+    renderArtistNote();
+    updatePreview();
+    renderTracks();
+    mbStatus(
+      `Filled in from “${rel.title}”. ` +
+      (applied ? `Matched ${applied} track${applied === 1 ? "" : "s"}. `
+               : "Add the files and they'll line up by order. ") +
+      "Check everything before uploading.",
+      "ok"
+    );
+  }
+
+  // Map the MusicBrainz track list onto the files already queued, in order.
+  // Only when the counts line up: a partial match would silently mis-title
+  // half a record, which is worse than leaving the filename guesses alone.
+  function applyTrackList(tracks) {
+    const ordered = [...tracks].sort(
+      (a, b) => (a.disc - b.disc) || (a.position - b.position)
+    );
+    pendingTracks = ordered;
+    const local = queue.filter((q) => !q.stored);
+    if (!local.length || local.length !== ordered.length) return 0;
+    local.forEach((item, i) => {
+      item.title = ordered[i].title || item.title;
+      item.track = ordered[i].position || item.track;
+      item.disc = ordered[i].disc || 1;
+      item.mb = ordered[i].recordingId || "";
+    });
+    return local.length;
+  }
+
+  async function maybeFetchCover(url) {
+    if (!url || (cover && cover.file)) return;
+    try {
+      const res = await fetch(url, { mode: "cors" });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      if (!blob.size || !blob.type.startsWith("image/")) return;
+      const ext = blob.type === "image/png" ? ".png" : ".jpg";
+      cover = { file: new File([blob], "cover" + ext, { type: blob.type }),
+                original: "cover art from MusicBrainz" };
+      renderCover();
+    } catch (_) {
+      // Cover art is the most optional thing here; a CORS or network refusal
+      // just means the uploader adds one themselves, or Plex fetches its own.
+    }
+  }
+
   /* --------------------------------------------------------------- files */
 
   let queue = [];
+  let pendingTracks = [];   // an MB track list waiting for files to line up with
 
   const AUDIO = new Set(state.extensions || []);
 
@@ -260,18 +469,34 @@
       const hint = parseHint(file.name);
       queue.push({
         file, name: file.name, size: file.size,
-        track: hint.track, title: hint.title,
+        track: hint.track, title: hint.title, disc: 1, mb: "",
       });
     }
     // Numbered files first in numeric order, then anything unnumbered in the
     // order it was dropped -- which is the order the tracks get filled into.
     queue.sort((a, b) => (a.track || 9999) - (b.track || 9999));
+    applyPendingTracks();
     renderTracks();
     renderCover();
     suggestFromFolder(fileList);
     if (rejected.length) {
       alert(`Skipped ${rejected.length} file(s) that aren't audio:\n` + rejected.slice(0, 8).join("\n"));
     }
+  }
+
+  // A lookup done before the files were added leaves the track list waiting;
+  // apply it once the counts line up.
+  function applyPendingTracks() {
+    if (!pendingTracks.length) return;
+    const local = queue.filter((q) => !q.stored);
+    if (local.length !== pendingTracks.length) return;
+    local.forEach((item, i) => {
+      item.title = pendingTracks[i].title || item.title;
+      item.track = pendingTracks[i].position || item.track;
+      item.disc = pendingTracks[i].disc || 1;
+      item.mb = pendingTracks[i].recordingId || "";
+    });
+    mbStatus(`Matched ${local.length} files to the track list. Check them.`, "ok");
   }
 
   /* ------------------------------------------------- filling in the form */
@@ -386,11 +611,25 @@
   function renderTracks() {
     const body = $("tracks-body");
     body.textContent = "";
+    const multiDisc = currentMode() === "album" && discTotal() > 1;
+    $("tracks").classList.toggle("has-disc", multiDisc);
     queue.forEach((item, index) => {
       const row = document.createElement("tr");
 
       const num = document.createElement("td");
       num.className = "n";
+      if (multiDisc) {
+        const discInput = document.createElement("input");
+        discInput.type = "number";
+        discInput.min = "1";
+        discInput.className = "disc";
+        discInput.title = "disc";
+        discInput.value = item.disc || 1;
+        discInput.addEventListener("change", () => {
+          item.disc = Math.max(1, parseInt(discInput.value, 10) || 1);
+        });
+        num.appendChild(discInput);
+      }
       const numInput = document.createElement("input");
       numInput.type = "number";
       numInput.min = "0";
@@ -724,18 +963,53 @@
         size: f.size || 0,
         track: f.track || hint.track,
         title: f.title || hint.title,
+        disc: f.disc || 1,
+        mb: f.mb_recording_id || "",
       };
     });
     queue = local.concat(remote);
+    applyPendingTracks();
     renderTracks();
   }
 
   function readDetails() {
+    const mode = currentMode();
+    const base = {
+      mode,
+      artist: $("artist").value,
+      genre: $("genre").value,
+    };
+    if (mode === "album") {
+      return {
+        ...base,
+        album: $("album").value,
+        album_artist: $("album-artist").value,
+        date: $("album-date").value,
+        label: $("label").value,
+        release_type: $("release-type").value,
+        disc_total: discTotal(),
+        mb_release_id: mbSelection ? mbSelection.release : "",
+        mb_release_group_id: mbSelection ? mbSelection.releaseGroup : "",
+        mb_artist_id: mbSelection ? mbSelection.artistId : "",
+      };
+    }
     return {
-      artist: $("artist").value, date: $("date").value, venue: $("venue").value,
-      city: $("city").value, state: $("state").value, genre: $("genre").value,
+      ...base,
+      date: $("date").value, venue: $("venue").value,
+      city: $("city").value, state: $("state").value,
       taper: $("taper").value, source: $("source").value,
     };
+  }
+
+  // What finalize() needs per file. Disc and the MusicBrainz recording id
+  // only matter for an album, so a live show never sends them.
+  function trackEdit(item) {
+    const edit = { track: item.track, title: item.title };
+    if (currentMode() === "album") {
+      edit.disc = item.disc || 1;
+      edit.mb_recording_id = item.mb || "";
+    }
+    return edit;
   }
 
   async function submit(event) {
@@ -778,7 +1052,7 @@
     for (const item of queue) {
       if (item.stored) {
         // Fetched from a share link: already on the NAS, nothing to send.
-        stored[item.stored] = { track: item.track, title: item.title };
+        stored[item.stored] = trackEdit(item);
         continue;
       }
       try {
@@ -789,7 +1063,7 @@
             `${item.name} — ${humanSize(doneBytes + loaded)} of ${humanSize(totalBytes)}`;
         });
         doneBytes += item.size;
-        stored[result.stored] = { track: item.track, title: item.title };
+        stored[result.stored] = trackEdit(item);
         note(`${item.name} uploaded`, "ok");
       } catch (err) {
         failed++;
@@ -1030,8 +1304,24 @@
 
   if (state.allowed) {
     loadArtists();
-    ["artist", "date", "venue", "city", "state"].forEach((id) =>
+    applyMode();
+    ["artist", "date", "venue", "city", "state",
+     "album", "album-artist", "album-date"].forEach((id) =>
       $(id).addEventListener("input", updatePreview));
+
+    document.querySelectorAll('input[name="mode"]').forEach((radio) =>
+      radio.addEventListener("change", applyMode));
+
+    $("mb-lookup").addEventListener("click", runLookup);
+    $("album").addEventListener("keydown", (e) => {
+      // Enter in the album box means "look it up", not "submit the form".
+      if (e.key === "Enter") { e.preventDefault(); runLookup(); }
+    });
+    $("disc-total").addEventListener("input", () => { updatePreview(); renderTracks(); });
+    $("album-artist").addEventListener("input", () => {
+      clearTimeout(artistTimer);
+      artistTimer = setTimeout(renderArtistNote, 250);
+    });
 
     // Debounced: retyping an artist should not repaint the note on every
     // keystroke, but it must settle before the form is submitted.

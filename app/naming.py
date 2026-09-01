@@ -130,6 +130,44 @@ def album_tag(date: dt.date, city: str, state: str = "") -> str:
     return f"{stamp} {where}".strip()
 
 
+def album_folder_name(album: str, year: int | None = None) -> str:
+    """`<Album>` or `<Album> (YYYY)` for a studio release rather than a live show.
+
+    The live-show convention (`<Artist> - MM_DD_YY <Venue>...`) makes no sense
+    for an album: there is no venue and the date is a release date, not a gig.
+    `<Album> (Year)` is the shape Plex, Lidarr and Picard all expect, and the
+    year disambiguates a re-recording or a reissue from the original.
+    """
+    safe = sanitize_component(album, fallback="Unknown Album")
+    if year and 1900 <= int(year) <= dt.date.today().year + 1:
+        with_year = sanitize_component(f"{safe} ({int(year)})", fallback=safe)
+        # sanitize could in theory eat the parens; only use it if they survived.
+        if with_year.endswith(f"({int(year)})"):
+            return with_year
+    return safe
+
+
+def album_track_filename(
+    track_no: int, title: str, extension: str, disc: int = 1, disc_total: int = 1
+) -> str:
+    """`01. Title.flac`, or `1-01. Title.flac` once a release has two+ discs.
+
+    A live show is numbered in one flat run and never needs the disc prefix;
+    a double album does, so its two "track 1"s do not collide in one folder.
+    """
+    if disc_total > 1:
+        ext = extension if extension.startswith(".") else f".{extension}"
+        ext = ext.lower()
+        safe_title = sanitize_component(
+            title, fallback="Untitled", strip_trailing_dots=False
+        )
+        budget = 255 - len(ext) - 8
+        if len(safe_title) > budget:
+            safe_title = safe_title[:budget].rstrip(" ")
+        return f"{max(1, disc)}-{track_no:02d}. {safe_title}{ext}"
+    return track_filename(track_no, title, extension)
+
+
 def track_filename(track_no: int, title: str, extension: str) -> str:
     """`01. Husbands.flac` — zero-padded to two digits, as the library does."""
     ext = extension if extension.startswith(".") else f".{extension}"

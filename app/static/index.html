@@ -42,43 +42,98 @@
   <!-- The upload form -->
   <section id="view-upload" hidden>
     <form id="show-form" class="card">
-      <h2>The show</h2>
+      <div class="mode-toggle" role="radiogroup" aria-label="What are you uploading?">
+        <label class="mode-option">
+          <input type="radio" name="mode" value="show" checked>
+          <span><strong>A live show</strong><small>filed by venue and date</small></span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="mode" value="album">
+          <span><strong>An album</strong><small>a studio or official release</small></span>
+        </label>
+      </div>
+
+      <h2 id="form-heading">The show</h2>
       <div class="grid">
-        <p class="field span2">
+        <p class="field span2" id="field-artist">
           <label for="artist">Artist <span class="req">*</span></label>
           <input id="artist" name="artist" required autocomplete="off"
                  list="known-artists" placeholder="Geese">
           <datalist id="known-artists"></datalist>
           <span class="artist-note" id="artist-note" hidden></span>
         </p>
-        <p class="field">
+
+        <!-- Album mode -->
+        <p class="field span2" id="field-album" hidden>
+          <label for="album">Album <span class="req">*</span></label>
+          <span class="album-row">
+            <input id="album" name="album" autocomplete="off" placeholder="Sunlit Youth">
+            <button class="btn" id="mb-lookup" type="button">Look up</button>
+          </span>
+        </p>
+        <p class="field span2" id="field-album-artist" hidden>
+          <label for="album-artist">Album artist</label>
+          <input id="album-artist" name="album_artist" autocomplete="off"
+                 list="known-artists" placeholder="only if it differs from the artist">
+        </p>
+        <p class="field" id="field-album-date" hidden>
+          <label for="album-date">Released</label>
+          <input id="album-date" name="album_date" autocomplete="off"
+                 placeholder="2016 or 2016-09-30" inputmode="numeric">
+        </p>
+        <p class="field" id="field-label" hidden>
+          <label for="label">Record label</label>
+          <input id="label" name="label" autocomplete="off" placeholder="Hardly Art">
+        </p>
+        <p class="field" id="field-release-type" hidden>
+          <label for="release-type">Type</label>
+          <input id="release-type" name="release_type" autocomplete="off"
+                 list="release-types" placeholder="Album">
+          <datalist id="release-types">
+            <option value="Album"></option><option value="EP"></option>
+            <option value="Single"></option><option value="Live"></option>
+            <option value="Compilation"></option><option value="Soundtrack"></option>
+          </datalist>
+        </p>
+        <p class="field" id="field-disc-total" hidden>
+          <label for="disc-total">Discs</label>
+          <input id="disc-total" name="disc_total" type="number" min="1" max="20" value="1">
+        </p>
+
+        <!-- Show mode -->
+        <p class="field" id="field-date">
           <label for="date">Date <span class="req">*</span></label>
           <input id="date" name="date" type="date" required>
         </p>
-        <p class="field">
+        <p class="field" id="field-genre">
           <label for="genre">Genre</label>
           <input id="genre" name="genre" autocomplete="off" placeholder="Rock">
         </p>
-        <p class="field span2">
+        <p class="field span2" id="field-venue">
           <label for="venue">Venue</label>
           <input id="venue" name="venue" autocomplete="off" placeholder="Thalia Hall">
         </p>
-        <p class="field">
+        <p class="field" id="field-city">
           <label for="city">City</label>
           <input id="city" name="city" autocomplete="off" placeholder="Chicago">
         </p>
-        <p class="field">
+        <p class="field" id="field-state">
           <label for="state">State</label>
           <input id="state" name="state" autocomplete="off" placeholder="IL" maxlength="20">
         </p>
-        <p class="field">
+        <p class="field" id="field-taper">
           <label for="taper">Taper</label>
           <input id="taper" name="taper" autocomplete="off" placeholder="who recorded it">
         </p>
-        <p class="field">
+        <p class="field" id="field-source">
           <label for="source">Source</label>
           <input id="source" name="source" autocomplete="off" placeholder="AUD, SBD, matrix…">
         </p>
+      </div>
+
+      <div class="mb-results" id="mb-results" hidden>
+        <p class="muted small" id="mb-status"></p>
+        <div class="link-choices" id="mb-choices"></div>
       </div>
 
       <p class="preview" id="preview" hidden>

@@ -38,7 +38,7 @@ try:
 except ImportError:
     GrantsEventClient = None
 
-from . import auth, importer, metadata, naming, plex as plex_api, storage
+from . import auth, importer, metadata, musicbrainz, naming, plex as plex_api, storage
 from .config import config
 from .invites import AccessStore, RedeemError, normalize_code
 from .storage import UploadError
@@ -190,6 +190,7 @@ async def index(request: Request) -> HTMLResponse:
         "maxFiles": config.max_files_per_show,
         "extensions": sorted(naming.AUDIO_EXTENSIONS),
         "autoPromote": config.auto_promote,
+        "lookupEnabled": config.musicbrainz_enabled,
         # Hides the sign-in and invite-code views: there is nothing for them
         # to do when the proxy handles both.
         "proxyAuth": config.proxy_auth,
@@ -302,16 +303,39 @@ def _render_message(message: str, *, back: bool = False) -> HTMLResponse:
 async def create_session(request: Request) -> Response:
     user = _require_uploader(request)
     payload = await request.json()
+
+    def _str(key: str) -> str:
+        return str(payload.get(key, "")).strip()
+
+    mode = _str("mode").lower() or "show"
+    if mode not in ("show", "album"):
+        return _json_error("Unknown upload type.")
+
+    try:
+        disc_total = max(1, int(payload.get("disc_total", 1) or 1))
+    except (TypeError, ValueError):
+        disc_total = 1
+
     details = storage.ShowDetails(
-        artist=str(payload.get("artist", "")).strip(),
-        date=str(payload.get("date", "")).strip(),
-        venue=str(payload.get("venue", "")).strip(),
-        city=str(payload.get("city", "")).strip(),
-        state=str(payload.get("state", "")).strip(),
-        genre=str(payload.get("genre", "")).strip(),
-        source=str(payload.get("source", "")).strip(),
-        taper=str(payload.get("taper", "")).strip(),
-        notes=str(payload.get("notes", "")).strip(),
+        artist=_str("artist"),
+        date=_str("date"),
+        venue=_str("venue"),
+        city=_str("city"),
+        state=_str("state"),
+        genre=_str("genre"),
+        source=_str("source"),
+        taper=_str("taper"),
+        notes=_str("notes"),
+        mode=mode,
+        album=_str("album"),
+        album_artist=_str("album_artist"),
+        label=_str("label"),
+        release_type=_str("release_type"),
+        disc_total=disc_total,
+        mb_release_id=_str("mb_release_id"),
+        mb_release_group_id=_str("mb_release_group_id"),
+        mb_artist_id=_str("mb_artist_id"),
+        mb_album_artist_id=_str("mb_album_artist_id"),
     )
     details.validate()
 
@@ -618,6 +642,55 @@ async def artist_match(request: Request, name: str = "") -> Response:
     return JSONResponse(
         {"ok": True, "resolved": resolved, "existing": existing, "similar": similar}
     )
+
+
+@app.post("/api/lookup")
+async def lookup_releases(request: Request) -> Response:
+    """Best-effort album candidates from MusicBrainz for the artist + title.
+
+    Optional in the same way Plex is: if it errors or finds nothing the
+    uploader just fills the album in by hand. Never touches a session and
+    never files anything -- it only offers metadata to pre-fill the form.
+    """
+    _require_uploader(request)
+    if not config.musicbrainz_enabled:
+        return _json_error("Metadata lookup is switched off on the server.", 503)
+
+    payload = await request.json()
+    artist = str(payload.get("artist", "")).strip()
+    album = str(payload.get("album", "")).strip()
+    if not album:
+        return _json_error("Type an album name to look up.")
+    try:
+        tracks = int(payload.get("tracks") or 0) or None
+    except (TypeError, ValueError):
+        tracks = None
+
+    try:
+        releases = await to_thread.run_sync(
+            functools.partial(
+                musicbrainz.search, artist, album, track_count=tracks
+            )
+        )
+    except musicbrainz.MusicBrainzError as exc:
+        return _json_error(str(exc), 502)
+
+    return JSONResponse(
+        {"ok": True, "releases": [r.as_dict() for r in releases]}
+    )
+
+
+@app.get("/api/lookup/{release_id}")
+async def lookup_release(release_id: str, request: Request) -> Response:
+    """One release in full: the track list plus the ids Plex and Lidarr read."""
+    _require_uploader(request)
+    if not config.musicbrainz_enabled:
+        return _json_error("Metadata lookup is switched off on the server.", 503)
+    try:
+        release = await to_thread.run_sync(musicbrainz.release, release_id)
+    except musicbrainz.MusicBrainzError as exc:
+        return _json_error(str(exc), 502)
+    return JSONResponse({"ok": True, "release": release.as_dict()})
 
 
 @app.post("/api/inspect-link")

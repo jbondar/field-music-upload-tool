@@ -173,23 +173,45 @@ def build_tags(
     comment: str = "",
     source: str = "",
     taper: str = "",
+    album_artist: str = "",
+    disc: int = 1,
+    disc_total: int = 1,
+    date: str = "",
+    label: str = "",
+    release_type: str = "",
+    mb_ids: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Assemble the tag set, dropping anything empty."""
+    """Assemble the tag set, dropping anything empty.
+
+    The defaults reproduce the live-show tag set exactly: ``album_artist``
+    tracks ``artist``, ``disc`` is a bare ``1``, ``DATE`` is the year. An
+    album upload passes the extra arguments -- a real album artist, a disc of
+    ``2/2``, a full release date, a label, a release type and the MusicBrainz
+    ids Plex's own agent and Lidarr match on.
+    """
     tags: dict[str, str] = {
         "ARTIST": artist,
-        "album_artist": artist,
+        "album_artist": album_artist.strip() or artist,
         "ALBUM": album,
         "TITLE": title,
         "track": f"{track}/{total_tracks}" if total_tracks else str(track),
-        "disc": "1",
-        "DATE": str(year),
+        "disc": f"{disc}/{disc_total}" if disc_total and disc_total > 1 else "1",
+        "DATE": date.strip() or (str(year) if year else ""),
         "GENRE": genre,
         "comment": comment,
         # Provenance. Non-standard keys survive in FLAC/Vorbis comments and are
         # ignored gracefully elsewhere, which is what we want.
         "SOURCE": source,
         "TAPER": taper,
+        # Album provenance. Picard, Lidarr and Plex's "Plex Music" agent all
+        # read these; on a live show they are simply absent.
+        "LABEL": label,
+        "RELEASETYPE": release_type,
+        "MUSICBRAINZ_ALBUMTYPE": release_type,
     }
+    for key, value in (mb_ids or {}).items():
+        if str(value).strip():
+            tags[key] = str(value).strip()
     return {k: v for k, v in tags.items() if str(v).strip()}
 
 

@@ -22,6 +22,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import threading
@@ -55,7 +56,7 @@ def _now_iso() -> str:
 @dataclass
 class ShowDetails:
     artist: str
-    date: str  # ISO YYYY-MM-DD
+    date: str  # a live show: ISO YYYY-MM-DD. an album: "", "YYYY" or an ISO date.
     venue: str = ""
     city: str = ""
     state: str = ""
@@ -63,6 +64,35 @@ class ShowDetails:
     source: str = ""
     taper: str = ""
     notes: str = ""
+    # "show" (a live recording, the original and default) or "album" (a studio
+    # or official release, filed as `<Album> (Year)` and tagged from its own
+    # metadata rather than the venue/date convention).
+    mode: str = "show"
+    album: str = ""              # album title -- album mode only
+    album_artist: str = ""       # when it differs from `artist`; defaults to it
+    label: str = ""
+    release_type: str = ""       # "Album", "EP", "Live", "Compilation"...
+    disc_total: int = 1
+    # MusicBrainz ids, when a lookup found the release. Written into the tags
+    # so Plex's own agent and Lidarr line the album up with the same entry.
+    mb_release_id: str = ""
+    mb_release_group_id: str = ""
+    mb_artist_id: str = ""
+    mb_album_artist_id: str = ""
+
+    @property
+    def is_album(self) -> bool:
+        return self.mode == "album"
+
+    @property
+    def folder_artist(self) -> str:
+        """The name the artist *folder* takes: the album artist for an album."""
+        return (self.album_artist.strip() if self.is_album else "") or self.artist.strip()
+
+    @property
+    def release_year(self) -> int:
+        match = re.match(r"\s*(\d{4})", self.date or "")
+        return int(match.group(1)) if match else 0
 
     @property
     def date_obj(self) -> dt.date:
@@ -71,6 +101,24 @@ class ShowDetails:
     def validate(self) -> None:
         if not self.artist.strip():
             raise UploadError("Artist is required.")
+
+        if self.is_album:
+            if not self.album.strip():
+                raise UploadError("Album name is required.")
+            raw = self.date.strip()
+            if raw:
+                # A bare year is fine; a fuller date must still be a real one.
+                if not re.fullmatch(r"\d{4}", raw):
+                    try:
+                        dt.date.fromisoformat(raw)
+                    except ValueError as exc:
+                        raise UploadError(
+                            "Release date must be a year or YYYY-MM-DD."
+                        ) from exc
+                if not 1900 <= self.release_year <= dt.date.today().year + 1:
+                    raise UploadError("Release year looks wrong.")
+            return
+
         try:
             parsed = self.date_obj
         except (ValueError, TypeError) as exc:
@@ -94,6 +142,8 @@ class TrackEntry:
     error: str = ""
     duration: float = 0.0
     codec: str = ""
+    disc: int = 1
+    mb_recording_id: str = ""
 
 
 @dataclass
@@ -228,12 +278,16 @@ class Store:
             artist, fallback="Unknown Artist"
         )
 
-    def target_dir(self, details: ShowDetails) -> Path:
-        artist_dir, _ = naming.resolve_artist_dir(self.music, details.artist)
-        folder = naming.show_folder_name(
-            artist_dir.name, details.date_obj, details.venue, details.city, details.state
+    def _folder_name(self, details: ShowDetails, artist: str) -> str:
+        if details.is_album:
+            return naming.album_folder_name(details.album, details.release_year)
+        return naming.show_folder_name(
+            artist, details.date_obj, details.venue, details.city, details.state
         )
-        return artist_dir / folder
+
+    def target_dir(self, details: ShowDetails) -> Path:
+        artist_dir, _ = naming.resolve_artist_dir(self.music, details.folder_artist)
+        return artist_dir / self._folder_name(details, artist_dir.name)
 
     def target_exists(self, details: ShowDetails) -> bool:
         return self.target_dir(details).exists()
@@ -430,6 +484,13 @@ class Store:
                         entry["track"] = max(0, int(edit["track"]))
                     except (TypeError, ValueError):
                         pass
+                if "disc" in edit:
+                    try:
+                        entry["disc"] = max(1, int(edit["disc"]))
+                    except (TypeError, ValueError):
+                        pass
+                if "mb_recording_id" in edit:
+                    entry["mb_recording_id"] = str(edit["mb_recording_id"]).strip()
             self._write_manifest(manifest)
             return manifest
 
@@ -455,19 +516,41 @@ class Store:
             if build.exists():
                 shutil.rmtree(build, ignore_errors=True)
 
-            artist = self.canonical_artist(details.artist)
-            folder = naming.show_folder_name(
-                artist, details.date_obj, details.venue, details.city, details.state
-            )
+            artist = self.canonical_artist(details.folder_artist)
+            folder = self._folder_name(details, artist)
             show_dir = build / folder
             show_dir.mkdir(parents=True)
 
             entries = manifest.entries()
+            disc_total = max(1, details.disc_total) if details.is_album else 1
             self._assign_track_numbers(entries)
-            total = len(entries)
-            year = details.date_obj.year
-            album = naming.album_tag(details.date_obj, details.city, details.state)
             comment = f"Uploaded by {manifest.uploader_name or manifest.uploader_email}"
+
+            if details.is_album:
+                # An album is tagged from its own metadata, not the venue/date
+                # convention: ALBUM is the title, ARTIST can differ from the
+                # album artist, and the date is a real release date.
+                track_artist = details.artist.strip() or artist
+                album = details.album.strip()
+                year = details.release_year
+                date_tag = details.date.strip()
+                per_disc_total = {
+                    disc: sum(1 for e in entries if e.disc == disc)
+                    for disc in {e.disc for e in entries}
+                }
+            else:
+                track_artist = artist
+                album = naming.album_tag(details.date_obj, details.city, details.state)
+                year = details.date_obj.year
+                date_tag = ""
+                per_disc_total = {1: len(entries)}
+
+            album_mb_ids = {
+                "MUSICBRAINZ_ALBUMID": details.mb_release_id,
+                "MUSICBRAINZ_RELEASEGROUPID": details.mb_release_group_id,
+                "MUSICBRAINZ_ARTISTID": details.mb_artist_id,
+                "MUSICBRAINZ_ALBUMARTISTID": details.mb_album_artist_id,
+            }
 
             errors: list[str] = []
             used_names: set[str] = set()
@@ -480,28 +563,43 @@ class Store:
                     entry.duration = probe.duration
                     entry.codec = probe.codec
 
-                    target_name = self._unique_name(
-                        naming.track_filename(entry.track, entry.title, Path(entry.stored).suffix),
-                        used_names,
-                    )
+                    suffix = Path(entry.stored).suffix
+                    if details.is_album:
+                        base_name = naming.album_track_filename(
+                            entry.track, entry.title, suffix, entry.disc, disc_total
+                        )
+                    else:
+                        base_name = naming.track_filename(entry.track, entry.title, suffix)
+                    target_name = self._unique_name(base_name, used_names)
                     destination = show_dir / target_name
                     # Copy rather than move: the received bytes stay in files/
                     # so a failed run can be retried from the form.
                     shutil.copy2(source, destination)
 
+                    mb_ids = dict(album_mb_ids)
+                    if entry.mb_recording_id:
+                        mb_ids["MUSICBRAINZ_TRACKID"] = entry.mb_recording_id
+
                     metadata.write_tags(
                         destination,
                         metadata.build_tags(
-                            artist=artist,
+                            artist=track_artist,
+                            album_artist=artist,
                             album=album,
                             title=entry.title,
                             track=entry.track,
-                            total_tracks=total,
+                            total_tracks=per_disc_total.get(entry.disc, len(entries)),
                             year=year,
+                            date=date_tag,
                             genre=details.genre,
                             comment=comment,
                             source=details.source,
                             taper=details.taper,
+                            disc=entry.disc if details.is_album else 1,
+                            disc_total=disc_total,
+                            label=details.label,
+                            release_type=details.release_type,
+                            mb_ids=mb_ids if details.is_album else None,
                         ),
                     )
                     entry.status = "ready"
@@ -561,13 +659,22 @@ class Store:
             shutil.rmtree(build, ignore_errors=True)
             return manifest
 
-    @staticmethod
-    def _assign_track_numbers(entries: list[TrackEntry]) -> None:
+    @classmethod
+    def _assign_track_numbers(cls, entries: list[TrackEntry]) -> None:
         """Fill gaps so numbering is 1..n with no duplicates.
 
         Files whose names carried a number keep it where that is consistent;
-        anything else is numbered in the order it was uploaded.
+        anything else is numbered in the order it was uploaded. A multi-disc
+        album is numbered within each disc, so disc 2 also starts at 1.
         """
+        discs: dict[int, list[TrackEntry]] = {}
+        for entry in entries:
+            discs.setdefault(entry.disc or 1, []).append(entry)
+        for disc_entries in discs.values():
+            cls._number_one_run(disc_entries)
+
+    @staticmethod
+    def _number_one_run(entries: list[TrackEntry]) -> None:
         seen: set[int] = set()
         for entry in entries:
             if entry.track and entry.track not in seen:
@@ -595,7 +702,7 @@ class Store:
         return candidate
 
     def _promote(self, show_dir: Path, details: ShowDetails) -> Path:
-        artist_dir, _ = naming.resolve_artist_dir(self.music, details.artist)
+        artist_dir, _ = naming.resolve_artist_dir(self.music, details.folder_artist)
         artist_dir.mkdir(parents=True, exist_ok=True)
         final = artist_dir / show_dir.name
 
