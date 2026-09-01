@@ -168,6 +168,33 @@ input.guessed:focus { background: var(--bg); }
             margin-top: 0.8rem; }
 .plex-row #plex-status { font-size: 0.9rem; color: var(--muted); }
 
+/* show-vs-album picker */
+.mode-toggle { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
+.mode-option {
+  flex: 1 1 12rem; display: flex; gap: 0.55rem; align-items: flex-start;
+  border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.8rem;
+  cursor: pointer; font-size: 0.9rem;
+}
+.mode-option:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.mode-option input { width: auto; margin-top: 0.15rem; }
+.mode-option span { display: flex; flex-direction: column; }
+.mode-option small { color: var(--muted); font-size: 0.78rem; }
+
+.album-row { display: flex; gap: 0.5rem; }
+.album-row input { flex: 1 1 auto; }
+.album-row .btn { flex: 0 0 auto; }
+
+.mb-results { margin-top: 0.8rem; }
+.mb-results #mb-status.ok { color: var(--ok); }
+.mb-results #mb-status.bad { color: var(--bad); }
+
+.tracks.has-disc th.n, .tracks.has-disc td.n { width: 6.5rem; }
+.tracks.has-disc td.n { display: flex; gap: 0.3rem; }
+.tracks input.disc { width: 2.6rem; opacity: 0.75; }
+
 .artist-note { display: block; margin-top: 0.3rem; font-size: 0.82rem; }
 .artist-note.match { color: var(--ok); }
 .artist-note.near { color: var(--muted); }

@@ -34,18 +34,50 @@ If anything fails validation, or a folder for that show already exists, the
 upload is held in staging and shows up in the admin panel for review. Nothing
 is ever overwritten.
 
+## Uploading an album, not a show
+
+The venue/date convention makes no sense for a studio record, so the form has
+a **live show / album** switch at the top. In album mode:
+
+- **Album** is a required field, and **Album artist** takes over the artist
+  folder when the two differ (a soundtrack, a "feat.", a split). The preview
+  becomes `Music/<Album Artist>/<Album> (Year)/`.
+- **Released** accepts a bare year or a full `YYYY-MM-DD`. **Record label**,
+  **Type** and **Discs** are optional; two or more discs switch the track
+  files to `D-NN. Title.flac` and number each disc from 1.
+- **Look up** searches MusicBrainz for the artist and title and lists the
+  matching pressings. Picking one fills in the title, date, label, type and
+  disc count, replaces the filename-guessed track table (only when the track
+  counts line up), and — if the files are already added — tries to pull the
+  front cover from the Cover Art Archive as `cover.jpg`.
+
+The lookup is entirely optional and can fail without consequence: the same
+"degrades quietly" rule as Plex and the grants log. Turn it off with
+`MUSICBRAINZ_ENABLED=false`.
+
+### Tags an album carries that a show does not
+
+On top of the live-show set, an album writes what Plex's own music agent,
+Lidarr and Picard read: `ALBUM` as the real title (not `YYYY/MM/DD City`),
+`DATE` as the full release date, a distinct `album_artist`, `disc` as `2/2`
+where relevant, `LABEL`, `RELEASETYPE` / `MUSICBRAINZ_ALBUMTYPE`, and the
+MusicBrainz ids `MUSICBRAINZ_ALBUMID`, `MUSICBRAINZ_RELEASEGROUPID`,
+`MUSICBRAINZ_ARTISTID` and per-track `MUSICBRAINZ_TRACKID`. Fill any of them
+in by hand, or let a lookup populate them.
+
 ## Layout
 
 ```
 app/
-  main.py       routes: pages, upload API, admin API
-  auth.py       Google OAuth + signed cookie sessions
-  invites.py    allowlist and invite codes, persisted as JSON
-  naming.py     the folder/file naming convention
-  metadata.py   ffprobe/ffmpeg: probe, decode-verify, write tags
-  storage.py    staging, validation, promotion into the library
-  static/       the page itself
-tests/          pytest, including a full receive-to-filed run
+  main.py         routes: pages, upload API, lookup API, admin API
+  auth.py         Google OAuth + signed cookie sessions
+  invites.py      allowlist and invite codes, persisted as JSON
+  naming.py       the folder/file naming convention (shows and albums)
+  metadata.py     ffprobe/ffmpeg: probe, decode-verify, write tags
+  musicbrainz.py  best-effort album metadata + Cover Art Archive
+  storage.py      staging, validation, promotion into the library
+  static/         the page itself
+tests/            pytest, including full receive-to-filed runs for both modes
 ```
 
 ## Matching the artist against the library
@@ -185,6 +217,7 @@ for the full list. The ones that matter:
 | `STAGING_DIR` | Where uploads land first — **put it on the same filesystem as `MUSIC_DIR`** so promotion is a rename rather than a multi-gigabyte copy |
 | `STATE_DIR` | Allowlist and invite records |
 | `AUTO_PROMOTE` | `false` to approve every show by hand |
+| `MUSICBRAINZ_ENABLED` | `false` to switch off the album metadata lookup |
 
 ### Google OAuth setup
 

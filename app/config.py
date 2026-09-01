@@ -105,6 +105,14 @@ class Config:
         default_factory=lambda: _env("PLEX_MUSIC_PATH", "/media/Music")
     )
 
+    # --- Album metadata lookup (optional, same story as Plex above) --------
+    # An album upload can pull its title, tracks, label and MusicBrainz ids
+    # from MusicBrainz to pre-fill the form. No key; set MUSICBRAINZ_USER_AGENT
+    # to put your own contact in the request. Turn the whole thing off here.
+    musicbrainz_enabled: bool = field(
+        default_factory=lambda: _env_bool("MUSICBRAINZ_ENABLED", True)
+    )
+
     # --- Limits ------------------------------------------------------------
     max_file_bytes: int = field(
         default_factory=lambda: _env_int("MAX_FILE_MB", 1024) * 1024 * 1024
