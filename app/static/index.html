@@ -173,5 +173,10 @@
 </main>
 
 <script src="__BASE_PATH__/static/app.js"></script>
+<!-- Account chip + app switcher, shared with home.jakebondar.com, grants,
+     and recipes rather than reimplemented here -- see its own comment in
+     apps/grants/app/pages.py. Renders nothing for a signed-out visitor,
+     since the /api/mine call it makes is what's actually gated. -->
+<script src="https://auth.jakebondar.com/widget.js" defer></script>
 </body>
 </html>
