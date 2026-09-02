@@ -48,6 +48,28 @@ log = logging.getLogger("upload")
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+
+@functools.lru_cache(maxsize=1)
+def _asset_version() -> str:
+    """Short hash of the front-end bundle, appended to the static URLs.
+
+    The page loads app.js and style.css unversioned, so a browser -- or Cloudflare
+    in front of it -- can keep serving a stale copy across a deploy, which is how
+    a fix can look like it "didn't ship". The query string changes with the
+    content, so a new build is always a fresh URL. Computed once per process;
+    every deploy restarts the container.
+    """
+    import hashlib
+
+    digest = hashlib.sha256()
+    for name in ("index.html", "style.css", "app.js"):
+        try:
+            digest.update((STATIC_DIR / name).read_bytes())
+        except OSError:  # pragma: no cover - a missing asset is its own failure
+            pass
+    return digest.hexdigest()[:12]
+
+
 app = FastAPI(title="Field Music Upload", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -172,10 +194,14 @@ async def healthz() -> str:
 
 def _render(page_state: dict[str, Any]) -> HTMLResponse:
     template = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    body = template.replace("__BASE_PATH__", html.escape(config.base_path)).replace(
-        "__STATE__", html.escape(json.dumps(page_state), quote=True)
+    body = (
+        template.replace("__BASE_PATH__", html.escape(config.base_path))
+        .replace("__ASSET_VER__", _asset_version())
+        .replace("__STATE__", html.escape(json.dumps(page_state), quote=True))
     )
-    return HTMLResponse(body)
+    # The shell itself must never be cached, or it keeps pointing at the old
+    # ?v= and the versioned assets never get requested.
+    return HTMLResponse(body, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/", response_class=HTMLResponse)
