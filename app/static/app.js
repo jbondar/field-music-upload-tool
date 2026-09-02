@@ -253,18 +253,39 @@
     SHOW_FIELDS.forEach((id) => { $(id).hidden = album; });
     ALBUM_FIELDS.forEach((id) => { $(id).hidden = !album; });
 
-    // A hidden required field cannot be focused, so reportValidity() would
-    // wedge. Move the requirement to whichever field the mode actually shows.
+    // Swap which fields the browser enforces. A live show needs a real date;
+    // an album needs a title and may have no date at all. A hidden required
+    // field can't be focused, so reportValidity() would wedge -- hence the
+    // requirement moves with the mode rather than sitting on both.
     $("date").required = !album;
     $("album").required = album;
+    $("req-loc").hidden = album;
 
     $("form-heading").textContent = album ? "The album" : "The show";
-    if (!album) { $("mb-results").hidden = true; }
-    if (!state.lookupEnabled) { $("mb-lookup").hidden = true; }
+    if (!album) $("mb-results").hidden = true;
+    if (!state.lookupEnabled) $("mb-lookup").hidden = true;
 
+    syncLocationRequirement();
     renderTracks();
     renderArtistNote();
     updatePreview();
+  }
+
+  // A show is filed under a venue/city, so at least one is required -- the
+  // server enforces it either way, but a custom validity message means the
+  // form points at the field instead of failing on a round trip. Parked on
+  // #city because it is always the last of the pair; cleared in album mode,
+  // where #city is hidden and an unfocusable invalid control would jam
+  // reportValidity() entirely.
+  function syncLocationRequirement() {
+    if (currentMode() === "album") {
+      $("city").setCustomValidity("");
+      $("loc-hint").hidden = true;
+      return;
+    }
+    const missing = !$("venue").value.trim() && !$("city").value.trim();
+    $("city").setCustomValidity(missing ? "Enter a venue or a city." : "");
+    $("loc-hint").hidden = !missing;
   }
 
   /* ------------------------------------------------ metadata lookup */
@@ -1311,6 +1332,9 @@
 
     document.querySelectorAll('input[name="mode"]').forEach((radio) =>
       radio.addEventListener("change", applyMode));
+
+    ["venue", "city"].forEach((id) =>
+      $(id).addEventListener("input", syncLocationRequirement));
 
     $("mb-lookup").addEventListener("click", runLookup);
     $("album").addEventListener("keydown", (e) => {
