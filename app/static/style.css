@@ -26,6 +26,11 @@
 }
 
 * { box-sizing: border-box; }
+/* `el.hidden = true` must win. Several rules here set `display` on classes that
+   also get toggled hidden (.field, .artist-note, .link-choices), and a class
+   rule outranks the UA [hidden] rule, so without this the element stays on
+   screen. The mode switch depends on this to swap show/album fields. */
+[hidden] { display: none !important; }
 body {
   margin: 0;
   background: var(--bg);
@@ -168,20 +173,72 @@ input.guessed:focus { background: var(--bg); }
             margin-top: 0.8rem; }
 .plex-row #plex-status { font-size: 0.9rem; color: var(--muted); }
 
-/* show-vs-album picker */
-.mode-toggle { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
-.mode-option {
-  flex: 1 1 12rem; display: flex; gap: 0.55rem; align-items: flex-start;
-  border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.8rem;
-  cursor: pointer; font-size: 0.9rem;
+/* show-vs-album picker.
+   The active state is driven by `input:checked ~ .box` -- a following-sibling
+   rule that every browser has supported for years -- rather than :has() on the
+   label, which older desktop Firefox does not resolve and so left the picker
+   with no visible selection. The real radio is visually hidden but still
+   focusable, so the arrow keys still move between the two. */
+.mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
 }
-.mode-option:has(input:checked) {
+.mode-toggle + h2 { margin-top: 0; }
+@media (max-width: 32rem) { .mode-toggle { grid-template-columns: 1fr; } }
+
+.mode-option { display: block; cursor: pointer; }
+.mode-option > input {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+.mode-option-box {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  height: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.85rem;
+  transition: border-color 0.12s, background 0.12s;
+}
+.mode-option:hover .mode-option-box { border-color: var(--muted); }
+.mode-option > input:checked ~ .mode-option-box {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
-.mode-option input { width: auto; margin-top: 0.15rem; }
-.mode-option span { display: flex; flex-direction: column; }
-.mode-option small { color: var(--muted); font-size: 0.78rem; }
+.mode-option > input:focus-visible ~ .mode-option-box {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.mode-option-dot {
+  flex: none;
+  margin-top: 0.15rem;
+  width: 1.05rem; height: 1.05rem;
+  border: 1.5px solid var(--line);
+  border-radius: 50%;
+  display: grid;
+  place-content: center;
+}
+.mode-option-dot::after {
+  content: "";
+  width: 0.58rem; height: 0.58rem;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: scale(0);
+  transition: transform 0.12s;
+}
+.mode-option > input:checked ~ .mode-option-box .mode-option-dot { border-color: var(--accent); }
+.mode-option > input:checked ~ .mode-option-box .mode-option-dot::after { transform: scale(1); }
+
+.mode-option-text { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.mode-option-title { font-weight: 600; font-size: 0.92rem; }
+.mode-option-sub { color: var(--muted); font-size: 0.8rem; line-height: 1.3; }
 
 .album-row { display: flex; gap: 0.5rem; }
 .album-row input { flex: 1 1 auto; }

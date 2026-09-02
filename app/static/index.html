@@ -45,11 +45,23 @@
       <div class="mode-toggle" role="radiogroup" aria-label="What are you uploading?">
         <label class="mode-option">
           <input type="radio" name="mode" value="show" checked>
-          <span><strong>A live show</strong><small>filed by venue and date</small></span>
+          <span class="mode-option-box">
+            <span class="mode-option-dot" aria-hidden="true"></span>
+            <span class="mode-option-text">
+              <span class="mode-option-title">Live show</span>
+              <span class="mode-option-sub">A concert recording — filed by date and venue</span>
+            </span>
+          </span>
         </label>
         <label class="mode-option">
           <input type="radio" name="mode" value="album">
-          <span><strong>An album</strong><small>a studio or official release</small></span>
+          <span class="mode-option-box">
+            <span class="mode-option-dot" aria-hidden="true"></span>
+            <span class="mode-option-text">
+              <span class="mode-option-title">Album</span>
+              <span class="mode-option-sub">A studio or official release — filed by title</span>
+            </span>
+          </span>
         </label>
       </div>
 
@@ -110,8 +122,9 @@
           <input id="genre" name="genre" autocomplete="off" placeholder="Rock">
         </p>
         <p class="field span2" id="field-venue">
-          <label for="venue">Venue</label>
+          <label for="venue">Venue <span class="req" id="req-loc">*</span></label>
           <input id="venue" name="venue" autocomplete="off" placeholder="Thalia Hall">
+          <span class="muted small" id="loc-hint">A venue or a city is required.</span>
         </p>
         <p class="field" id="field-city">
           <label for="city">City</label>
