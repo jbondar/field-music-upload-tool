@@ -38,7 +38,17 @@ try:
 except ImportError:
     GrantsEventClient = None
 
-from . import auth, importer, metadata, musicbrainz, naming, plex as plex_api, storage
+from . import (
+    archive_org as archive_api,
+    auth,
+    importer,
+    metadata,
+    musicbrainz,
+    naming,
+    plex as plex_api,
+    storage,
+)
+from .archive_accounts import AccountStore
 from .config import config
 from .invites import AccessStore, RedeemError, normalize_code
 from .storage import UploadError
@@ -59,6 +69,15 @@ plex = plex_api.Plex(
     section=config.plex_section,
     music_path=config.plex_music_path,
     library_root=config.music_dir,
+)
+# An uploader's own archive.org connection, and the thing that uploads with
+# it. Both exist whatever the config says; config.archive_org is what decides
+# whether the page offers any of it.
+archive_accounts = AccountStore(config.state_dir, config.archive_org_secret)
+archive_org = archive_api.Publisher(
+    collection=config.archive_org_collection,
+    archive_base=config.archive_org_base,
+    s3_endpoint=config.archive_org_s3,
 )
 store = storage.Store(
     config.staging_dir,
@@ -191,6 +210,9 @@ async def index(request: Request) -> HTMLResponse:
         "extensions": sorted(naming.AUDIO_EXTENSIONS),
         "autoPromote": config.auto_promote,
         "lookupEnabled": config.musicbrainz_enabled,
+        "archiveOrgEnabled": config.archive_org,
+        "archiveOrgPasswordLogin": config.archive_org_password_login,
+        "archiveOrgCollection": config.archive_org_collection,
         # Hides the sign-in and invite-code views: there is nothing for them
         # to do when the proxy handles both.
         "proxyAuth": config.proxy_auth,
@@ -205,6 +227,12 @@ async def index(request: Request) -> HTMLResponse:
                 "admin": config.is_admin(user.email),
             }
         )
+        # The connection is tied to this sign-in, so the page knows on
+        # first paint whether the checkbox or the connect form belongs
+        # in front of them.
+        if config.archive_org:
+            account = archive_accounts.get(user.email)
+            state["archiveOrgAccount"] = account.public() if account else {"connected": False}
     return _render(state)
 
 
@@ -298,6 +326,98 @@ def _render_message(message: str, *, back: bool = False) -> HTMLResponse:
 # --------------------------------------------------------------------------
 # upload api
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# archive.org accounts
+#
+# Connecting one is tied to the jakebondar.com sign-in: _require_uploader
+# gates every route here, the keys are stored against that email, and they are
+# still there the next time the same person signs in. Publishing is then a
+# checkbox rather than a second sign-in every visit.
+# --------------------------------------------------------------------------
+
+def _require_archive_org(request: Request) -> auth.User:
+    user = _require_uploader(request)
+    if not config.archive_org:
+        raise _Unauthorized("Publishing to archive.org is switched off here.", status=404)
+    return user
+
+
+def _account_payload(user: auth.User) -> dict[str, Any]:
+    account = archive_accounts.get(user.email)
+    return account.public() if account else {"connected": False}
+
+
+@app.get("/api/archive-org/account")
+async def archive_org_account(request: Request) -> Response:
+    user = _require_archive_org(request)
+    return JSONResponse({"ok": True, "account": _account_payload(user)})
+
+
+@app.post("/api/archive-org/account")
+async def archive_org_connect(request: Request) -> Response:
+    """Connect this uploader's archive.org account.
+
+    Two ways in, both ending at the same key pair: their archive.org password,
+    which is exchanged for keys and then forgotten, or keys they generated
+    themselves. Whichever it was, the pair is checked against archive.org
+    before it is stored -- a typo should fail here, in front of the person who
+    typed it, not an hour later at the end of an upload.
+    """
+    user = _require_archive_org(request)
+    payload = await request.json()
+    method = str(payload.get("method") or "password").strip().lower()
+
+    try:
+        if method == "keys":
+            credentials = await to_thread.run_sync(
+                functools.partial(
+                    archive_api.verify,
+                    str(payload.get("access") or ""),
+                    str(payload.get("secret") or ""),
+                    s3_endpoint=config.archive_org_s3,
+                )
+            )
+        elif not config.archive_org_password_login:
+            return _json_error("Connect with archive.org API keys instead.", 400)
+        else:
+            credentials = await to_thread.run_sync(
+                functools.partial(
+                    archive_api.sign_in,
+                    str(payload.get("email") or ""),
+                    str(payload.get("password") or ""),
+                    archive_base=config.archive_org_base,
+                )
+            )
+            # Sign-in hands back keys but not a usable screen name in every
+            # case; the same check the pasted path runs fills that in.
+            if not credentials.screenname:
+                credentials = await to_thread.run_sync(
+                    functools.partial(
+                        archive_api.verify,
+                        credentials.access,
+                        credentials.secret,
+                        s3_endpoint=config.archive_org_s3,
+                    )
+                )
+    except archive_api.ArchiveAuthError as exc:
+        return _json_error(str(exc), 400)
+
+    account = await to_thread.run_sync(
+        functools.partial(archive_accounts.save, user.email, credentials, method=method)
+    )
+    # Deliberately no key material in this line: it is the one place both
+    # halves of a credential are in memory at once.
+    log.info("archive.org connected for %s as %s", user.email, account.username or "?")
+    return JSONResponse({"ok": True, "account": account.public()})
+
+
+@app.delete("/api/archive-org/account")
+async def archive_org_disconnect(request: Request) -> Response:
+    user = _require_archive_org(request)
+    removed = await to_thread.run_sync(archive_accounts.forget, user.email)
+    return JSONResponse({"ok": True, "removed": removed, "account": {"connected": False}})
+
 
 @app.post("/api/session")
 async def create_session(request: Request) -> Response:
@@ -753,7 +873,7 @@ async def fetch_link(session_id: str, request: Request) -> Response:
 
 @app.post("/api/session/{session_id}/finalize")
 async def finalize(session_id: str, request: Request) -> Response:
-    _require_uploader(request)
+    user = _require_uploader(request)
     payload = await request.json()
     edits = payload.get("tracks") or {}
     if edits:
@@ -770,6 +890,13 @@ async def finalize(session_id: str, request: Request) -> Response:
     if promoted and grants_events is not None:
         asyncio.create_task(_report_upload(manifest))
 
+    # Opt-in, per show, and never for an album: publishing is public and
+    # effectively permanent, so it has to be something the uploader asked for
+    # on this upload rather than a setting they turned on once.
+    archive_pending = promoted and bool(payload.get("archiveOrg")) and _start_archive_org(
+        session_id, user, manifest
+    )
+
     return JSONResponse(
         {
             "ok": promoted,
@@ -779,8 +906,87 @@ async def finalize(session_id: str, request: Request) -> Response:
             "files": manifest.files,
             "plex": manifest.plex,
             "plexPending": promoted and plex.configured,
+            "archiveOrg": manifest.archive_org,
+            "archiveOrgPending": archive_pending,
         }
     )
+
+
+def _start_archive_org(
+    session_id: str, user: auth.User, manifest: storage.Manifest
+) -> bool:
+    """Kick off the archive.org publish, or record why it is not happening.
+
+    Returns whether the page should start polling. Every "no" here is written
+    into the manifest as a message rather than raised: the show is filed, and
+    a reason on the page beats a failed request over something the upload
+    never depended on.
+    """
+    def refuse(message: str) -> bool:
+        manifest.archive_org = store.set_archive_org(
+            session_id, status="skipped", message=message
+        )
+        return False
+
+    if not config.archive_org:
+        return refuse("Publishing to archive.org is switched off here.")
+    if not manifest.target_path:
+        return refuse("The show has not been filed yet.")
+    if str(manifest.show.get("mode") or "show") == "album":
+        # The form hides the checkbox in album mode; this is the server saying
+        # the same thing, since a studio release is somebody else's to publish.
+        return refuse("Only live recordings are published to archive.org.")
+
+    credentials = archive_accounts.credentials(user.email)
+    if credentials is None:
+        return refuse("No archive.org account is connected.")
+
+    # No file count yet: the manifest counts tracks, and the folder that goes
+    # up may also hold a cover. The first progress tick reports the real total,
+    # and the page says "publishing…" rather than a wrong count until then.
+    manifest.archive_org = store.set_archive_org(
+        session_id, status="uploading", done=0, total=0, message=""
+    )
+    asyncio.create_task(
+        _publish_to_archive_org(
+            session_id, Path(manifest.target_path), dict(manifest.show), credentials
+        )
+    )
+    return True
+
+
+async def _publish_to_archive_org(
+    session_id: str,
+    folder: Path,
+    show: dict[str, Any],
+    credentials: archive_api.Credentials,
+) -> None:
+    """Mirror a filed show into the Internet Archive.
+
+    The same contract as _publish_to_plex: by the time this runs the show is
+    already in the library, so a refused key, a 503 from S3 or an identifier
+    clash is a line on the page -- never a lost recording.
+    """
+    def progress(done: int, total: int, name: str) -> None:
+        try:
+            store.set_archive_org(session_id, status="uploading", done=done, total=total, file=name)
+        except Exception:  # a progress tick must not abort the upload
+            log.exception("could not record archive.org progress for %s", session_id)
+
+    call = functools.partial(archive_org.publish, credentials, folder, show, on_progress=progress)
+    try:
+        record = await to_thread.run_sync(call)
+    except archive_api.ArchiveError as exc:
+        record = {"status": "error", "message": str(exc)}
+    except Exception:
+        log.exception("archive.org publish failed for %s", session_id)
+        record = {"status": "error", "message": "Could not publish to archive.org."}
+    try:
+        await to_thread.run_sync(functools.partial(store.set_archive_org, session_id, **record))
+    except Exception:
+        log.exception("could not record archive.org result for %s", session_id)
+    else:
+        log.info("archive.org for %s: %s", session_id, record.get("status"))
 
 
 async def _report_upload(manifest: storage.Manifest) -> None:
@@ -842,6 +1048,7 @@ async def session_status(session_id: str, request: Request) -> Response:
             "fetch": manifest.fetch,
             "cover": manifest.cover,
             "plex": manifest.plex,
+            "archiveOrg": manifest.archive_org,
         }
     )
 
@@ -879,6 +1086,8 @@ def _upload_summary(m: storage.Manifest) -> dict[str, Any]:
         # {} before a promoted show's Plex publish has even started; frontends
         # treat every unrecognised/absent status the same as "no link yet".
         "plex": m.plex,
+        # {} unless this show was published, which most are not.
+        "archiveOrg": m.archive_org,
     }
 
 
@@ -942,6 +1151,31 @@ async def admin_retry_plex(session_id: str, request: Request) -> Response:
     record = await to_thread.run_sync(plex.publish, Path(manifest.target_path))
     await to_thread.run_sync(store.set_plex, session_id, record)
     return JSONResponse({"ok": True, "plex": record})
+
+
+@app.post("/api/archive-org/publish/{session_id}")
+async def archive_org_publish(session_id: str, request: Request) -> Response:
+    """Publish a show that is already filed.
+
+    Both the retry for a publish archive.org refused at the time, and the way
+    to send up a show whose box was left unticked. It only ever reads the
+    filed folder -- nothing here can move or rewrite a file in the library.
+    """
+    user = _require_archive_org(request)
+    manifest = await to_thread.run_sync(store.load, session_id)
+    if manifest.uploader_email.lower() != user.email.lower() and not config.is_admin(user.email):
+        raise _Unauthorized("That is not your upload.", status=403)
+    if manifest.status != storage.STATUS_PROMOTED:
+        return _json_error("That show has not been filed yet.")
+    if manifest.archive_org.get("status") == "uploading":
+        return _json_error("That show is already going up.")
+    if manifest.archive_org.get("identifier"):
+        return _json_error("That show is already on archive.org.")
+    if not _start_archive_org(session_id, user, manifest):
+        return _json_error(
+            manifest.archive_org.get("message") or "Could not start the publish."
+        )
+    return JSONResponse({"ok": True, "archiveOrg": manifest.archive_org})
 
 
 @app.post("/api/admin/invite")

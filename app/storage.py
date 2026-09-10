@@ -165,6 +165,10 @@ class Manifest:
     # Where the show ended up in Plex once it has been scanned in:
     # {"status", "url", "title", "artist"}. Purely informational.
     plex: dict[str, Any] = field(default_factory=dict)
+    # Where the show ended up on archive.org, when the uploader asked for it:
+    # {"status", "identifier", "url", "files", "done", "message"}. As with
+    # plex above, purely informational -- the show is filed either way.
+    archive_org: dict[str, Any] = field(default_factory=dict)
     # The show's poster, if one came with it: {"stored", "original", "size"}.
     # Not a TrackEntry -- it is artwork, not a track, and must never be
     # numbered, tagged or counted towards the track list.
@@ -453,6 +457,18 @@ class Store:
             manifest = self.load(session_id)
             manifest.plex = record
             self._write_manifest(manifest)
+
+    def set_archive_org(self, session_id: str, **fields: Any) -> dict[str, Any]:
+        """Merge progress into the manifest's archive.org record.
+
+        Merged rather than replaced, like set_fetch: a per-file progress tick
+        must not wipe the identifier the upload has already claimed.
+        """
+        with self._lock(session_id):
+            manifest = self.load(session_id)
+            manifest.archive_org = {**manifest.archive_org, **fields}
+            self._write_manifest(manifest)
+            return manifest.archive_org
 
     def set_fetch(self, session_id: str, **fields: Any) -> dict[str, Any]:
         """Merge progress into the manifest's fetch record.

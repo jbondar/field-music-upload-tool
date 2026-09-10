@@ -189,6 +189,68 @@
         <tbody id="tracks-body"></tbody>
       </table>
 
+      <!-- archive.org. Opt in per show, and never in album mode: publishing
+           is public and effectively permanent, and a studio record is not the
+           uploader's to put up. Connecting is tied to this sign-in, so it is
+           done once and the checkbox is the whole interaction after that. -->
+      <div class="ia" id="ia-block" hidden>
+        <label class="ia-check" id="ia-offer" hidden>
+          <input type="checkbox" id="ia-publish">
+          <span>Also publish this show to <strong>archive.org</strong> — publicly,
+            and for good.</span>
+        </label>
+        <p class="muted small ia-who" id="ia-who" hidden>
+          Connected as <strong id="ia-account"></strong> ·
+          <button class="link" id="ia-disconnect" type="button">disconnect</button>
+        </p>
+        <p class="muted small" id="ia-connect-row" hidden>
+          <button class="link" id="ia-connect" type="button">Connect your archive.org account</button>
+          to publish shows there as you file them.
+        </p>
+
+        <div class="ia-panel" id="ia-panel" hidden>
+          <div class="ia-tabs">
+            <button class="link on" id="ia-tab-password" type="button">Email and password</button>
+            <button class="link" id="ia-tab-keys" type="button">Paste API keys</button>
+          </div>
+
+          <div id="ia-mode-password">
+            <p class="field">
+              <label for="ia-email">archive.org email</label>
+              <input id="ia-email" type="email" autocomplete="off">
+            </p>
+            <p class="field">
+              <label for="ia-password">archive.org password</label>
+              <input id="ia-password" type="password" autocomplete="off">
+            </p>
+            <p class="muted small">
+              Sent to archive.org to fetch your API keys. The password is not stored here.
+            </p>
+          </div>
+
+          <div id="ia-mode-keys" hidden>
+            <p class="field">
+              <label for="ia-access">Access key</label>
+              <input id="ia-access" autocomplete="off" spellcheck="false">
+            </p>
+            <p class="field">
+              <label for="ia-secret">Secret key</label>
+              <input id="ia-secret" autocomplete="off" spellcheck="false">
+            </p>
+            <p class="muted small">
+              Generate a pair at <a href="https://archive.org/account/s3.php"
+              target="_blank" rel="noopener">archive.org/account/s3.php</a>.
+            </p>
+          </div>
+
+          <p class="ia-actions">
+            <button class="btn" id="ia-save" type="button">Connect</button>
+            <button class="link" id="ia-cancel" type="button">Cancel</button>
+            <span class="muted small" id="ia-status"></span>
+          </p>
+        </div>
+      </div>
+
       <div class="actions">
         <button class="btn primary" id="submit" type="submit" disabled>Upload show</button>
         <span class="muted small" id="summary"></span>
@@ -202,6 +264,10 @@
       <p class="plex-row" id="plex-row" hidden>
         <span id="plex-status"></span>
         <a class="btn" id="plex-link" href="#" target="_blank" rel="noopener" hidden>Open in Plex</a>
+      </p>
+      <p class="plex-row" id="ia-row" hidden>
+        <span id="ia-progress"></span>
+        <a class="btn" id="ia-link" href="#" target="_blank" rel="noopener" hidden>View on archive.org</a>
       </p>
       <ul class="results" id="results"></ul>
     </div>

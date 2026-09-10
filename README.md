@@ -75,6 +75,8 @@ app/
   naming.py       the folder/file naming convention (shows and albums)
   metadata.py     ffprobe/ffmpeg: probe, decode-verify, write tags
   musicbrainz.py  best-effort album metadata + Cover Art Archive
+  archive_org.py  connecting an archive.org account, and the S3-like upload
+  archive_accounts.py  each uploader's archive.org keys, encrypted at rest
   storage.py      staging, validation, promotion into the library
   static/         the page itself
 tests/            pytest, including full receive-to-filed runs for both modes
@@ -129,6 +131,93 @@ show is already safely in the library and the uploader is told so.
 `PLEX_MUSIC_PATH` matters: Plex reaches the same files through its own mount,
 so `/music/Artist/Show` here has to become `/media/Music/Artist/Show` before a
 scan request means anything. It must match the Location on the music section.
+
+## Publishing to archive.org
+
+A show filed here is still only in one library, on one NAS. An uploader can
+connect their own Internet Archive account and mirror a live recording into it
+as the show is filed -- one checkbox on the same form, no second errand
+afterwards.
+
+**Connecting is tied to the jakebondar.com sign-in.** Only a signed-in
+uploader can connect an account, the keys are stored against their address,
+and the connection is still there the next time they sign in. It is done once,
+ever; after that the checkbox is the whole interaction.
+
+Archive.org publishes no OAuth for third-party apps, so there are two ways in
+and both end at the same place -- that account's S3-like API keys:
+
+- **their archive.org email and password**, posted to `/services/xauthn/`,
+  which hands back the keys. This is what `ia configure` does. The password
+  goes to archive.org and nowhere else: not to disk, not into a log line, not
+  back to the browser.
+- **a key pair they generate** at archive.org/account/s3.php and paste in.
+  This is the way through if the account has two-factor sign-in, if
+  archive.org puts a captcha in front of the login, or if they would simply
+  rather not type a password here. Set `ARCHIVE_ORG_PASSWORD_LOGIN=false` to
+  offer only this.
+
+Either way the pair is checked against archive.org before it is stored, so a
+typo fails in front of the person who typed it rather than an hour later at
+the end of an upload.
+
+### Where the keys live
+
+They are that person's credentials, not this app's, so `STATE_DIR` holds
+ciphertext rather than a working key pair: a NAS snapshot or a stray copy of
+the state directory should not hand anyone an Internet Archive account. The
+encryption key is derived from `SESSION_SECRET` (or `ARCHIVE_ORG_SECRET`).
+
+Rotating that secret therefore drops every stored connection -- decryption
+fails, the account reads as disconnected, and they connect again. That is the
+right way round: a ciphertext nobody can open must never be mistaken for a
+working key. Without a secret to derive from, the feature switches itself off
+rather than falling back to plaintext.
+
+### What actually goes up
+
+One `PUT` per file to `https://s3.us.archive.org/<identifier>/<name>`, with
+the item's metadata riding along as `x-archive-meta-*` headers on the first
+request -- the one that creates the item. Files stream from disk with an
+explicit `Content-Length`, because IA's S3 will not take a chunked body for a
+multi-gigabyte show. Deriving is suppressed until the last file, so the item
+is transcoded once, complete, rather than once per track.
+
+The identifier is the artist and the date, `billy-strings-2023-12-15`, the way
+the Live Music Archive names shows. Identifiers are global to archive.org and
+the obvious one is often already somebody else's copy of the same night, so a
+free one is found first and suffixed if it has to be.
+
+Titles are written as a sentence rather than as the library's folder name:
+`Billy Strings Live at Mohegan Sun Arena, Wilkes-Barre, PA on 2023-12-15`.
+`Artist - 12_15_23 Venue` is a filing convention and reads like one. Non-ASCII
+values go up percent-encoded as `uri(...)`, which is archive.org's own escape
+and the only way an umlaut survives a header.
+
+Like Plex, none of it can fail an upload: by the time any of this runs the
+show is already in the library, so a refused key, a 503 from S3 or an
+identifier clash is a line on the page, never a lost recording. The upload
+runs detached from the request, so closing the tab does not stop it.
+
+### Two deliberate limits
+
+**Opt in, per show.** The box is off every time and never remembered.
+Publishing is public and effectively permanent, and a taper's recording going
+up without the artist's say-so is not a mistake you can quietly take back.
+
+**Live recordings only.** The checkbox is hidden in album mode and the server
+refuses it there too. A studio record is somebody else's to publish, and it
+would be the uploader's own archive.org account holding the bag.
+
+Items land in **Community Audio** (`opensource_audio`), the one collection an
+ordinary account can write to. The Live Music Archive (`etree`) is the natural
+home for a concert recording, but it only takes trade-friendly artists who
+have written to lma@archive.org, and its curators -- not an API -- decide what
+goes in. An item can be moved there afterwards.
+
+A show that was filed with the box unticked, or whose publish archive.org
+refused at the time, can be sent up later: `POST /api/archive-org/publish/{id}`,
+which only ever reads the filed folder.
 
 ## Filling the form in from the link
 
@@ -218,6 +307,8 @@ for the full list. The ones that matter:
 | `STATE_DIR` | Allowlist and invite records |
 | `AUTO_PROMOTE` | `false` to approve every show by hand |
 | `MUSICBRAINZ_ENABLED` | `false` to switch off the album metadata lookup |
+| `ARCHIVE_ORG_ENABLED` | `false` to hide publishing to archive.org entirely |
+| `ARCHIVE_ORG_SECRET` | Encrypts stored archive.org keys; defaults to `SESSION_SECRET` |
 
 ### Google OAuth setup
 

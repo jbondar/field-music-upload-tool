@@ -268,6 +268,7 @@
     syncLocationRequirement();
     renderTracks();
     renderArtistNote();
+    renderArchiveOrg();
     updatePreview();
   }
 
@@ -927,6 +928,149 @@
     setTimeout(tick, 2500);
   }
 
+  /* --------------------------------------------------------- archive.org */
+
+  // The connection belongs to the jakebondar.com account rather than to this
+  // tab: the server hands it over in the page state and it is still there the
+  // next time they sign in. All this has to decide is which of three things is
+  // in front of them -- the checkbox, the offer to connect, or the panel.
+  let iaAccount = state.archiveOrgAccount || { connected: false };
+
+  function renderArchiveOrg() {
+    if (!state.archiveOrgEnabled) return;
+    const album = currentMode() === "album";
+    // Hidden in album mode, and unticked with it: a box nobody can see must
+    // never still be sending a studio record to the Internet Archive.
+    $("ia-block").hidden = album;
+    if (album) $("ia-publish").checked = false;
+
+    const connecting = !$("ia-panel").hidden;
+    $("ia-offer").hidden = !iaAccount.connected || connecting;
+    $("ia-who").hidden = !iaAccount.connected || connecting;
+    $("ia-connect-row").hidden = iaAccount.connected || connecting;
+    if (iaAccount.connected) {
+      $("ia-account").textContent =
+        iaAccount.screenname || iaAccount.username || "archive.org";
+    }
+  }
+
+  function iaStatus(message, cls) {
+    const el = $("ia-status");
+    el.textContent = message || "";
+    el.className = "muted small" + (cls ? " " + cls : "");
+  }
+
+  function iaTab(keys) {
+    $("ia-mode-password").hidden = keys;
+    $("ia-mode-keys").hidden = !keys;
+    $("ia-tab-password").classList.toggle("on", !keys);
+    $("ia-tab-keys").classList.toggle("on", keys);
+    iaStatus("");
+  }
+
+  function openIaPanel() {
+    $("ia-panel").hidden = false;
+    iaTab(!state.archiveOrgPasswordLogin);
+    renderArchiveOrg();
+    $(state.archiveOrgPasswordLogin ? "ia-email" : "ia-access").focus();
+  }
+
+  function closeIaPanel() {
+    $("ia-panel").hidden = true;
+    iaStatus("");
+    clearIaInputs();
+    renderArchiveOrg();
+  }
+
+  // Neither a password nor a secret key has any business staying in the DOM
+  // once it has been sent.
+  function clearIaInputs() {
+    ["ia-email", "ia-password", "ia-access", "ia-secret"].forEach((id) => {
+      $(id).value = "";
+    });
+  }
+
+  async function connectArchiveOrg() {
+    const keys = !$("ia-mode-keys").hidden;
+    const payload = keys
+      ? { method: "keys",
+          access: $("ia-access").value.trim(),
+          secret: $("ia-secret").value.trim() }
+      : { method: "password",
+          email: $("ia-email").value.trim(),
+          password: $("ia-password").value };
+
+    $("ia-save").disabled = true;
+    iaStatus("Checking with archive.org…");
+    try {
+      const data = await postJSON("/api/archive-org/account", payload);
+      if (!data.ok) throw new Error(data.error || "Could not connect that account.");
+      iaAccount = data.account;
+      // They connected an account in the middle of filling in a show; they
+      // did not do that in order to leave the box unticked.
+      $("ia-publish").checked = true;
+      closeIaPanel();
+    } catch (err) {
+      iaStatus(err.message, "bad");
+    } finally {
+      $("ia-save").disabled = false;
+    }
+  }
+
+  async function disconnectArchiveOrg() {
+    try {
+      const data = await postJSON("/api/archive-org/account", undefined, "DELETE");
+      if (!data.ok) return;
+    } catch (_) {
+      return;
+    }
+    iaAccount = { connected: false };
+    $("ia-publish").checked = false;
+    renderArchiveOrg();
+  }
+
+  function watchArchiveOrg(sessionId) {
+    // The upload runs on the server, detached from this page, so closing the
+    // tab does not stop it -- this only reports on it.
+    $("ia-row").hidden = false;
+    $("ia-link").hidden = true;
+    $("ia-progress").textContent = "Sending the show to archive.org…";
+
+    const started = Date.now();
+    const tick = async () => {
+      if (Date.now() - started > 60 * 60 * 1000) {
+        $("ia-progress").textContent =
+          "Still going up. It will finish without this page open.";
+        return;
+      }
+      let data;
+      try {
+        data = await postJSON(`/api/session/${sessionId}`, undefined, "GET");
+      } catch (_) {
+        setTimeout(tick, 8000);
+        return;
+      }
+      const a = data.archiveOrg || {};
+      if (a.status === "uploaded" && a.url) {
+        $("ia-progress").textContent = `On archive.org as ${a.identifier}.`;
+        const link = $("ia-link");
+        link.href = a.url;
+        link.hidden = false;
+        return;
+      }
+      if (a.status === "error" || a.status === "skipped") {
+        $("ia-progress").textContent =
+          a.message || "Could not publish to archive.org — the show is filed either way.";
+        return;
+      }
+      $("ia-progress").textContent = a.total
+        ? `Publishing to archive.org — ${a.done || 0} of ${a.total} files.`
+        : "Publishing to archive.org…";
+      setTimeout(tick, 5000);
+    };
+    setTimeout(tick, 2000);
+  }
+
   function renderChoices(options) {
     const box = $("link-choices");
     box.textContent = "";
@@ -1044,6 +1188,7 @@
     $("progress-card").hidden = false;
     $("results").textContent = "";
     $("plex-row").hidden = true;
+    $("ia-row").hidden = true;
     $("progress-title").textContent = "Uploading…";
     $("bar-fill").style.width = "0%";
     $("progress-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1112,13 +1257,24 @@
     $("progress-detail").textContent = "Verifying every file decodes, writing tags, filing the show.";
 
     try {
-      const result = await postJSON(`/api/session/${session.id}/finalize`, { tracks: stored });
+      const result = await postJSON(`/api/session/${session.id}/finalize`, {
+        tracks: stored,
+        // Only ever what the box actually says, and only when the box is on
+        // screen at all -- album mode hides it and the server refuses it too.
+        archiveOrg: state.archiveOrgEnabled && !$("ia-block").hidden && $("ia-publish").checked,
+      });
       $("bar-fill").style.width = "100%";
       if (result.ok) {
         $("progress-title").textContent = "Filed";
         $("progress-detail").textContent = `Added to the library as ${result.folder}`;
         note("This show is now in the library. Thanks!", "ok");
         if (result.plexPending) watchPlex(session.id);
+        if (result.archiveOrgPending) {
+          watchArchiveOrg(session.id);
+        } else if ((result.archiveOrg || {}).status === "skipped") {
+          note(result.archiveOrg.message, "bad");
+        }
+        $("ia-publish").checked = false;
         queue = [];
         fetchedSession = null;
         cover = null;
@@ -1373,6 +1529,23 @@
     });
 
     $("show-form").addEventListener("submit", submit);
+
+    if (state.archiveOrgEnabled) {
+      $("ia-connect").addEventListener("click", openIaPanel);
+      $("ia-cancel").addEventListener("click", closeIaPanel);
+      $("ia-save").addEventListener("click", connectArchiveOrg);
+      $("ia-disconnect").addEventListener("click", disconnectArchiveOrg);
+      $("ia-tab-password").addEventListener("click", () => iaTab(false));
+      $("ia-tab-keys").addEventListener("click", () => iaTab(true));
+      $("ia-tab-password").hidden = !state.archiveOrgPasswordLogin;
+      // These inputs sit inside the show form, so Enter in one of them would
+      // otherwise try to file the show.
+      ["ia-email", "ia-password", "ia-access", "ia-secret"].forEach((id) =>
+        $(id).addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); connectArchiveOrg(); }
+        }));
+      renderArchiveOrg();
+    }
 
     $("link-fetch").addEventListener("click", fetchFromLink);
 

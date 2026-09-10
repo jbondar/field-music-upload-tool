@@ -3,6 +3,10 @@ uvicorn[standard]==0.34.0
 httpx==0.28.1
 itsdangerous==2.2.0
 python-multipart==0.0.20
+# Encrypts each uploader's stored archive.org keys. They are someone
+# else's credentials, so STATE_DIR holds ciphertext rather than a working
+# key pair -- see app/archive_accounts.py.
+cryptography==46.0.1
 # grants_events is NOT installed here -- it's a private-repo dependency
 # (web-services) and a plain requirements.txt line has nowhere to put the
 # credential that needs. See the Dockerfile's own RUN step: it's installed
