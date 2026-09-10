@@ -75,6 +75,8 @@ app/
   naming.py       the folder/file naming convention (shows and albums)
   metadata.py     ffprobe/ffmpeg: probe, decode-verify, write tags
   musicbrainz.py  best-effort album metadata + Cover Art Archive
+  archive_org.py  publishing a filed show over archive.org's S3-like API
+  linked.py       asks grants for an uploader's linked archive.org keys
   storage.py      staging, validation, promotion into the library
   static/         the page itself
 tests/            pytest, including full receive-to-filed runs for both modes
@@ -129,6 +131,77 @@ show is already safely in the library and the uploader is told so.
 `PLEX_MUSIC_PATH` matters: Plex reaches the same files through its own mount,
 so `/music/Artist/Show` here has to become `/media/Music/Artist/Show` before a
 scan request means anything. It must match the Location on the music section.
+
+## Publishing to archive.org
+
+A show filed here is still only in one library, on one NAS. An uploader can
+mirror a live recording into their own Internet Archive account as the show is
+filed -- one checkbox on the same form, no second errand afterwards.
+
+**The account is connected on the jakebondar.com sign-in, not here.** It is
+done once, at auth.jakebondar.com/accounts, where grants trades the uploader's
+archive.org email and password for that account's API keys (or takes a pasted
+key pair), and keeps the keys encrypted. It belongs to the person rather than
+to this app, so any other app on the stack can use the same connection. This
+app never takes an archive.org password and never stores a key: it asks
+grants for them over the internal network at the moment it publishes, and
+grants logs each read against this app. See `apps/grants/README.md` in
+web-services.
+
+On the page, an uploader who has not connected an account sees a link to do
+it. The link opens in a new tab, because a show half filled in here -- files
+and all -- must not be thrown away to go and do it. The page asks grants again
+when its tab regains focus, so the checkbox is simply there when they come
+back.
+
+It needs grants: `GRANTS_URL` and `GRANTS_CREDENTIALS_TOKEN`. Without them --
+running standalone, say -- the page never mentions archive.org, the same way
+it never mentions Plex without `PLEX_TOKEN`. A grants that is unreachable
+means the checkbox is not offered this time, not that anything fails.
+
+### What actually goes up
+
+One `PUT` per file to `https://s3.us.archive.org/<identifier>/<name>`, with
+the item's metadata riding along as `x-archive-meta-*` headers on the first
+request -- the one that creates the item. Files stream from disk with an
+explicit `Content-Length`, because IA's S3 will not take a chunked body for a
+multi-gigabyte show. Deriving is suppressed until the last file, so the item
+is transcoded once, complete, rather than once per track.
+
+The identifier is the artist and the date, `billy-strings-2023-12-15`, the way
+the Live Music Archive names shows. Identifiers are global to archive.org and
+the obvious one is often already somebody else's copy of the same night, so a
+free one is found first and suffixed if it has to be.
+
+Titles are written as a sentence rather than as the library's folder name:
+`Billy Strings Live at Mohegan Sun Arena, Wilkes-Barre, PA on 2023-12-15`.
+Non-ASCII values go up percent-encoded as `uri(...)`, archive.org's own escape
+and the only way an umlaut survives a header.
+
+Like Plex, none of it can fail an upload: by the time any of this runs the
+show is already in the library, so a refused key, a 503 from S3 or an
+identifier clash is a line on the page, never a lost recording. The upload
+runs detached from the request, so closing the tab does not stop it.
+
+### Two deliberate limits
+
+**Opt in, per show.** The box is off every time and never remembered.
+Publishing is public and effectively permanent, and a taper's recording going
+up without the artist's say-so is not a mistake you can quietly take back.
+
+**Live recordings only.** The checkbox is hidden in album mode and the server
+refuses it there too. A studio record is somebody else's to publish, and it
+would be the uploader's own archive.org account holding the bag.
+
+Items land in **Community Audio** (`opensource_audio`), the one collection an
+ordinary account can write to. The Live Music Archive (`etree`) is the natural
+home for a concert recording, but it only takes trade-friendly artists who
+have written to lma@archive.org, and its curators -- not an API -- decide what
+goes in. An item can be moved there afterwards.
+
+A show filed with the box unticked, or whose publish archive.org refused at
+the time, can be sent up later: `POST /api/archive-org/publish/{id}`, which
+only ever reads the filed folder.
 
 ## Filling the form in from the link
 
@@ -218,6 +291,8 @@ for the full list. The ones that matter:
 | `STATE_DIR` | Allowlist and invite records |
 | `AUTO_PROMOTE` | `false` to approve every show by hand |
 | `MUSICBRAINZ_ENABLED` | `false` to switch off the album metadata lookup |
+| `ARCHIVE_ORG_ENABLED` | `false` to hide publishing to archive.org entirely |
+| `GRANTS_CREDENTIALS_TOKEN` | Lets this app ask grants for an uploader's linked archive.org keys; without it (and `GRANTS_URL`) archive.org is never offered |
 
 ### Google OAuth setup
 

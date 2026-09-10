@@ -171,7 +171,17 @@ input.guessed:focus { background: var(--bg); }
 
 .plex-row { display: flex; gap: 0.7rem; align-items: center; flex-wrap: wrap;
             margin-top: 0.8rem; }
-.plex-row #plex-status { font-size: 0.9rem; color: var(--muted); }
+.plex-row #plex-status, .plex-row #ia-progress { font-size: 0.9rem; color: var(--muted); }
+
+/* archive.org: the opt-in, or the link out to connect an account.
+   Set apart from the fields above it with a rule rather than a box -- it is
+   a decision about the show, not another thing to fill in. */
+.ia { margin-top: 1.1rem; padding-top: 0.9rem; border-top: 1px solid var(--line); }
+.ia-check { display: flex; gap: 0.55rem; align-items: baseline; cursor: pointer; }
+.ia-check input { margin: 0; flex: none; }
+.ia-who { margin: 0.35rem 0 0 1.6rem; }
+#ia-connect-row { margin: 0; }
+
 
 /* show-vs-album picker.
    The active state is driven by `input:checked ~ .box` -- a following-sibling
