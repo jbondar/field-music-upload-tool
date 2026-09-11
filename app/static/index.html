@@ -5,19 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Upload a Show</title>
 <link rel="stylesheet" href="__BASE_PATH__/static/style.css">
+<script src="https://jakebondar.com/_shared/house-bar.js" defer></script>
 </head>
 <body data-state="__STATE__">
 
-<header class="bar">
-  <h1>Upload a Show</h1>
+<!-- The top bar is the house's shared <house-bar> (jakebondar.com/_shared/):
+     the home link and the signed-in account. Its items are this app's own:
+     the admin link, which app.js reveals for admins, and -- only when this
+     runs standalone, without the proxy -- the old name and sign-out. -->
+<house-bar home="https://jakebondar.com" home-label="jakebondar.com" home-title="jakebondar.com" account>
+  <a class="admin-link" id="admin-link" href="#view-admin" hidden>admin</a>
   <div class="who" id="who" hidden>
     <span id="who-name"></span>
-    <a class="admin-link" id="admin-link" href="#view-admin" hidden>admin</a>
     <form id="logout-form" method="post" action="__BASE_PATH__/logout"><button class="link">sign out</button></form>
   </div>
-</header>
+</house-bar>
 
 <main>
+  <h1 class="page-title">Upload a Show</h1>
   <!-- Not signed in -->
   <section id="view-signin" hidden>
     <p class="lede">Recorded a set? Put it straight on the shelf, filed and tagged the way the

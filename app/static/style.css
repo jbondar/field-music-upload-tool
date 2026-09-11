@@ -39,12 +39,20 @@ body {
 }
 main { max-width: 54rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
 
-.bar {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 1rem; flex-wrap: wrap;
+/* The top bar is the house's shared <house-bar> (jakebondar.com/_shared/),
+   handed this page's own tokens so it follows the light/dark palette. */
+house-bar {
+  display: block;
   max-width: 54rem; margin: 0 auto; padding: 1.25rem 1rem 0;
+  --house-bar-fg: var(--ink);
+  --house-bar-muted: var(--muted);
+  --house-bar-line: var(--line);
+  --house-bar-accent: var(--accent);
+  --house-bar-accent-ink: var(--accent-ink);
+  --house-bar-panel-bg: var(--panel);
 }
-.bar h1 { font-size: 1.4rem; margin: 0; letter-spacing: -0.01em; }
+house-bar:not(:defined) { min-height: 2.25rem; }
+.page-title { font-size: 1.4rem; margin: 0 0 0.5rem; letter-spacing: -0.01em; }
 .who { display: flex; align-items: center; gap: 0.75rem; color: var(--muted); font-size: 0.85rem; }
 .who form { margin: 0; }
 .admin-link { color: var(--muted); }

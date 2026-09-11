@@ -5,6 +5,7 @@ are the ones about what it does when that header is absent or malformed.
 """
 
 import importlib
+import re
 import sys
 
 import pytest
@@ -102,3 +103,20 @@ def test_no_oauth_credentials_needed_to_boot(monkeypatch, tmp_path):
     client, main = _app(monkeypatch, tmp_path)
     assert main.config.missing_required() == []
     assert client.get("/healthz").status_code == 200
+
+
+def test_page_carries_the_shared_house_bar(monkeypatch, tmp_path):
+    """The top bar is the house's <house-bar> (jakebondar.com/_shared/): it
+    shows the signed-in account, and this app's own admin link is an item in
+    it rather than a header of its own."""
+    client, _ = _app(monkeypatch, tmp_path, AUTH_URL="https://auth.example.com")
+    body = client.get("/", headers={HEADER: "friend@example.com"}).text
+    assert "https://jakebondar.com/_shared/house-bar.js" in body
+    # The real element, not the comment above it that also names it.
+    match = re.search(r"<house-bar\s([^>]*)>(.*?)</house-bar>", body, re.S)
+    assert match, "no <house-bar> element"
+    attrs, items = match.groups()
+    assert re.search(r"(^|\s)account(\s|$)", attrs)
+    assert 'id="admin-link"' in items
+    assert '<header class="bar">' not in body
+    assert '<h1 class="page-title">Upload a Show</h1>' in body

@@ -34,7 +34,9 @@
     }
 
     if (signedIn) {
-      $("who").hidden = false;
+      // Behind the proxy, the house bar's account chip is who you are and
+      // how you sign out; the old name + sign-out only shows standalone.
+      $("who").hidden = !!state.proxyAuth;
       $("who-name").textContent = state.user.name || state.user.email;
       $("invite-email").textContent = state.user.email;
       if (state.admin) {
