@@ -324,7 +324,11 @@ def _render_message(message: str, *, back: bool = False) -> HTMLResponse:
         f"<!doctype html><meta charset=utf-8>"
         f'<meta name=viewport content="width=device-width,initial-scale=1">'
         f"<title>Upload</title>"
+        # The same shared top bar as the upload page itself.
+        f'<script src="https://jakebondar.com/_shared/house-bar.js" defer></script>'
         f'<body style="font:16px/1.5 system-ui;margin:3rem auto;max-width:34rem;padding:0 1rem">'
+        f'<house-bar home="https://jakebondar.com" home-label="jakebondar.com" account '
+        f'style="margin-bottom:1.5rem"></house-bar>'
         f"<p>{html.escape(message)}</p>{link}</body>"
     )
 
