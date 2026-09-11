@@ -268,6 +268,7 @@
     syncLocationRequirement();
     renderTracks();
     renderArtistNote();
+    renderArchiveOrg();
     updatePreview();
   }
 
@@ -927,6 +928,96 @@
     setTimeout(tick, 2500);
   }
 
+  /* --------------------------------------------------------- archive.org */
+
+  // The account is connected on the jakebondar.com sign-in, at
+  // auth.jakebondar.com/accounts, not here. All this page decides is whether
+  // the checkbox or the link to go and connect one belongs in front of them.
+  let iaAccount = state.archiveOrgAccount || { connected: false };
+
+  function renderArchiveOrg() {
+    if (!state.archiveOrgEnabled) return;
+    const album = currentMode() === "album";
+    // Hidden in album mode, and unticked with it: a box nobody can see must
+    // never still be sending a studio record to the Internet Archive.
+    $("ia-block").hidden = album;
+    if (album || !iaAccount.connected) $("ia-publish").checked = false;
+
+    $("ia-offer").hidden = !iaAccount.connected;
+    $("ia-who").hidden = !iaAccount.connected;
+    $("ia-connect-row").hidden = iaAccount.connected;
+    if (iaAccount.connected) {
+      $("ia-account").textContent =
+        iaAccount.screenname || String(iaAccount.username || "").replace(/^@/, "") ||
+        "archive.org";
+    }
+  }
+
+  // Connecting happens in another tab. Ask again when this one comes back,
+  // so the checkbox is simply there -- no reload, no lost files.
+  let iaChecking = false;
+  async function refreshArchiveOrg() {
+    if (!state.archiveOrgEnabled || iaChecking) return;
+    iaChecking = true;
+    try {
+      const data = await postJSON("/api/archive-org/account", undefined, "GET");
+      if (data.ok) {
+        const was = iaAccount.connected;
+        iaAccount = data.account;
+        // They went off to connect an account in the middle of a show; they
+        // did not do that in order to leave the box unticked.
+        if (!was && iaAccount.connected) $("ia-publish").checked = true;
+        renderArchiveOrg();
+      }
+    } catch (_) {
+      // Leave the page as it was; the next time the tab is focused asks again.
+    } finally {
+      iaChecking = false;
+    }
+  }
+
+  function watchArchiveOrg(sessionId) {
+    // The upload runs on the server, detached from this page, so closing the
+    // tab does not stop it -- this only reports on it.
+    $("ia-row").hidden = false;
+    $("ia-link").hidden = true;
+    $("ia-progress").textContent = "Sending the show to archive.org…";
+
+    const started = Date.now();
+    const tick = async () => {
+      if (Date.now() - started > 60 * 60 * 1000) {
+        $("ia-progress").textContent =
+          "Still going up. It will finish without this page open.";
+        return;
+      }
+      let data;
+      try {
+        data = await postJSON(`/api/session/${sessionId}`, undefined, "GET");
+      } catch (_) {
+        setTimeout(tick, 8000);
+        return;
+      }
+      const a = data.archiveOrg || {};
+      if (a.status === "uploaded" && a.url) {
+        $("ia-progress").textContent = `On archive.org as ${a.identifier}.`;
+        const link = $("ia-link");
+        link.href = a.url;
+        link.hidden = false;
+        return;
+      }
+      if (a.status === "error" || a.status === "skipped") {
+        $("ia-progress").textContent =
+          a.message || "Could not publish to archive.org — the show is filed either way.";
+        return;
+      }
+      $("ia-progress").textContent = a.total
+        ? `Publishing to archive.org — ${a.done || 0} of ${a.total} files.`
+        : "Publishing to archive.org…";
+      setTimeout(tick, 5000);
+    };
+    setTimeout(tick, 2000);
+  }
+
   function renderChoices(options) {
     const box = $("link-choices");
     box.textContent = "";
@@ -1044,6 +1135,7 @@
     $("progress-card").hidden = false;
     $("results").textContent = "";
     $("plex-row").hidden = true;
+    $("ia-row").hidden = true;
     $("progress-title").textContent = "Uploading…";
     $("bar-fill").style.width = "0%";
     $("progress-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1112,13 +1204,24 @@
     $("progress-detail").textContent = "Verifying every file decodes, writing tags, filing the show.";
 
     try {
-      const result = await postJSON(`/api/session/${session.id}/finalize`, { tracks: stored });
+      const result = await postJSON(`/api/session/${session.id}/finalize`, {
+        tracks: stored,
+        // Only ever what the box actually says, and only when the box is on
+        // screen at all -- album mode hides it and the server refuses it too.
+        archiveOrg: state.archiveOrgEnabled && !$("ia-block").hidden && $("ia-publish").checked,
+      });
       $("bar-fill").style.width = "100%";
       if (result.ok) {
         $("progress-title").textContent = "Filed";
         $("progress-detail").textContent = `Added to the library as ${result.folder}`;
         note("This show is now in the library. Thanks!", "ok");
         if (result.plexPending) watchPlex(session.id);
+        if (result.archiveOrgPending) {
+          watchArchiveOrg(session.id);
+        } else if ((result.archiveOrg || {}).status === "skipped") {
+          note(result.archiveOrg.message, "bad");
+        }
+        $("ia-publish").checked = false;
         queue = [];
         fetchedSession = null;
         cover = null;
@@ -1373,6 +1476,17 @@
     });
 
     $("show-form").addEventListener("submit", submit);
+
+    if (state.archiveOrgEnabled) {
+      ["ia-connect", "ia-manage"].forEach((id) => {
+        if (state.archiveOrgConnectUrl) $(id).href = state.archiveOrgConnectUrl;
+      });
+      window.addEventListener("focus", refreshArchiveOrg);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) refreshArchiveOrg();
+      });
+      renderArchiveOrg();
+    }
 
     $("link-fetch").addEventListener("click", fetchFromLink);
 

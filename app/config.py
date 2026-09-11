@@ -113,6 +113,37 @@ class Config:
         default_factory=lambda: _env_bool("MUSICBRAINZ_ENABLED", True)
     )
 
+    # --- archive.org (optional, same story as Plex above) -----------------
+    # An uploader may mirror a live show into their own archive.org account
+    # as it is filed. The account is connected on their jakebondar.com sign-in
+    # (auth.jakebondar.com/accounts), not here: grants holds the keys, and this
+    # app asks it for them over the internal network at the moment it
+    # publishes. So it needs GRANTS_URL and GRANTS_CREDENTIALS_TOKEN, and
+    # without them -- standalone, say -- the page never offers it. Opt in per
+    # show; nothing here can fail an upload.
+    archive_org_enabled: bool = field(
+        default_factory=lambda: _env_bool("ARCHIVE_ORG_ENABLED", True)
+    )
+    # What grants' GET /api/linked/* wants before it hands over anyone's
+    # keys. Not GRANTS_EVENT_TOKEN: that one writes a log line.
+    grants_credentials_token: str = field(
+        default_factory=lambda: _env("GRANTS_CREDENTIALS_TOKEN")
+    )
+    # The one collection an ordinary account may write to. The Live Music
+    # Archive would be the natural home for a concert recording, but it only
+    # takes trade-friendly artists and its curators, not an API, decide what
+    # goes in; an item can be moved there later.
+    archive_org_collection: str = field(
+        default_factory=lambda: _env("ARCHIVE_ORG_COLLECTION", "opensource_audio")
+    )
+    # Endpoints, overridable so the tests can point at a local stand-in.
+    archive_org_base: str = field(
+        default_factory=lambda: _env("ARCHIVE_ORG_BASE", "https://archive.org").rstrip("/")
+    )
+    archive_org_s3: str = field(
+        default_factory=lambda: _env("ARCHIVE_ORG_S3", "https://s3.us.archive.org").rstrip("/")
+    )
+
     # --- Limits ------------------------------------------------------------
     max_file_bytes: int = field(
         default_factory=lambda: _env_int("MAX_FILE_MB", 1024) * 1024 * 1024
@@ -143,6 +174,17 @@ class Config:
     @property
     def cookie_path(self) -> str:
         return self.base_path or "/"
+
+    @property
+    def archive_org(self) -> bool:
+        """Can an uploader publish to archive.org from here?
+
+        Only behind grants, which is where the account is connected and its
+        keys are kept. Standalone, the feature does not exist.
+        """
+        return self.archive_org_enabled and bool(
+            self.grants_url and self.grants_credentials_token
+        )
 
     @property
     def proxy_auth(self) -> bool:

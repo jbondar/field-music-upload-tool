@@ -189,6 +189,27 @@
         <tbody id="tracks-body"></tbody>
       </table>
 
+      <!-- archive.org. Opt in per show, and never in album mode: publishing
+           is public and effectively permanent, and a studio record is not the
+           uploader's to put up. The account itself is connected on the
+           jakebondar.com sign-in, at auth.jakebondar.com/accounts -- in a new
+           tab, so a half-filled show is never lost to go and do it. -->
+      <div class="ia" id="ia-block" hidden>
+        <label class="ia-check" id="ia-offer" hidden>
+          <input type="checkbox" id="ia-publish">
+          <span>Also publish this show to <strong>archive.org</strong> — publicly,
+            and for good.</span>
+        </label>
+        <p class="muted small ia-who" id="ia-who" hidden>
+          As <strong id="ia-account"></strong> ·
+          <a id="ia-manage" target="_blank" rel="noopener">manage</a>
+        </p>
+        <p class="muted small" id="ia-connect-row" hidden>
+          <a id="ia-connect" target="_blank" rel="noopener">Connect your archive.org account</a>
+          to your jakebondar.com sign-in to publish shows there as you file them.
+        </p>
+      </div>
+
       <div class="actions">
         <button class="btn primary" id="submit" type="submit" disabled>Upload show</button>
         <span class="muted small" id="summary"></span>
@@ -202,6 +223,10 @@
       <p class="plex-row" id="plex-row" hidden>
         <span id="plex-status"></span>
         <a class="btn" id="plex-link" href="#" target="_blank" rel="noopener" hidden>Open in Plex</a>
+      </p>
+      <p class="plex-row" id="ia-row" hidden>
+        <span id="ia-progress"></span>
+        <a class="btn" id="ia-link" href="#" target="_blank" rel="noopener" hidden>View on archive.org</a>
       </p>
       <ul class="results" id="results"></ul>
     </div>
